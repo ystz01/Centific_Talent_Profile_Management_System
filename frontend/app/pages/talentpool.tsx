@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Search, Filter, Mail, Phone, Download } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -14,21 +14,26 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockCandidates } from '@/data/mockData';
-import { Candidate } from '@/types';
+import { subscribeToCandidatesCollection, type FirestoreCandidate } from '@/lib/firebase';
+
+type TalentPoolCandidate = FirestoreCandidate & { id: string };
 
 export function TalentPool() {
   const { hasPermission } = useAuth();
   const canWrite = hasPermission('Searchable Talent Pool', 'write');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [candidates] = useState<Candidate[]>(mockCandidates);
+  const [candidates, setCandidates] = useState<TalentPoolCandidate[]>([]);
+
+  useEffect(() => {
+    return subscribeToCandidatesCollection(setCandidates);
+  }, []);
 
   const filteredCandidates = candidates.filter(candidate => {
     const matchesSearch =
-      candidate.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      candidate.position.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      candidate.skills.some(skill => skill.toLowerCase().includes(searchQuery.toLowerCase()));
+      (candidate.name ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (candidate.work_history?.[0]?.role ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (candidate.skills ?? []).some(skill => skill.toLowerCase().includes(searchQuery.toLowerCase()));
 
     const matchesStatus = statusFilter === 'all' || candidate.status === statusFilter;
 
@@ -78,6 +83,7 @@ export function TalentPool() {
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
                 <SelectItem value="Approve to Hire">Approve to Hire</SelectItem>
+                <SelectItem value="Hired">Hired</SelectItem>
                 <SelectItem value="2nd Interview">2nd Interview</SelectItem>
                 <SelectItem value="KIV">KIV</SelectItem>
                 <SelectItem value="Reject">Reject</SelectItem>
@@ -102,27 +108,27 @@ export function TalentPool() {
                   <div className="flex items-start justify-between">
                     <div>
                       <h3 className="text-xl font-semibold">{candidate.name}</h3>
-                      <p className="text-muted-foreground">{candidate.position}</p>
+                      <p className="text-muted-foreground">{candidate.work_history?.[0]?.role ?? 'Position not specified'}</p>
                     </div>
                     <Badge variant="outline">
-                      {candidate.status}
+                      {candidate.status ?? 'Unknown'}
                     </Badge>
                   </div>
 
                   <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
                     <div className="flex items-center gap-1">
                       <Mail className="h-4 w-4" />
-                      {candidate.email}
+                      {candidate.email ?? '-'}
                     </div>
                     <div className="flex items-center gap-1">
                       <Phone className="h-4 w-4" />
-                      {candidate.phone}
+                      {candidate.phone ?? '-'}
                     </div>
-                    <div>{candidate.experience} experience</div>
+                    <div>{candidate.years_of_experience ?? 0} years experience</div>
                   </div>
 
                   <div className="flex flex-wrap gap-2">
-                    {candidate.skills.map((skill, index) => (
+                    {(candidate.skills ?? []).map((skill, index) => (
                       <Badge key={index} variant="secondary">
                         {skill}
                       </Badge>
@@ -131,7 +137,7 @@ export function TalentPool() {
 
                   <div className="text-sm">
                     <span className="text-muted-foreground">Education: </span>
-                    <span>{candidate.education}</span>
+                    <span>{candidate.highest_education ?? candidate.education_level ?? '-'}</span>
                   </div>
 
                 </div>

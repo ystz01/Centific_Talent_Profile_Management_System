@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from 'react';
-import { Calendar, Clock, User, Video, Plus, FileCheck } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useEffect, useState } from 'react';
+import { Calendar, Clock, User, Plus, FileCheck } from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -26,15 +26,16 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockInterviews, mockShortlistedCandidates } from '@/data/mockData';
 import { Interview } from '@/types';
 import { toast } from 'sonner';
+import { addInterviewRemark, scheduleInterview, subscribeToInterviews, updateInterviewDecision, updateInterviewRemark } from '@/lib/firebase';
 
 export function Interviews() {
   const { hasPermission, user } = useAuth();
   const canWrite = hasPermission('Interview Management', 'write');
   const isHiringManager = user?.role === 'Hiring Manager';
-  const [interviews, setInterviews] = useState<Interview[]>(mockInterviews);
+  const isDepartmentManager = user?.role === 'Department Manager';
+  const [interviews, setInterviews] = useState<Interview[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [decisionDialogOpen, setDecisionDialogOpen] = useState(false);
   const [selectedInterview, setSelectedInterview] = useState<Interview | null>(null);
@@ -42,22 +43,53 @@ export function Interviews() {
     candidateId: '',
     interviewDate: '',
     interviewTime: '',
-    interviewType: 'Technical' as 'Phone' | 'Technical' | 'HR' | 'Final',
+    interviewType: 'Technical Interview' as 'Technical Interview' | 'Phone Interview' | 'HR Interview' | 'Final Interview',
   });
   const [decision, setDecision] = useState({
-    decision: '' as 'Approve to Hire' | '2nd Interview' | 'Reject' | 'KIV' | 'Recommendation' | '',
-    remark: '',
+    decision: '' as 'accept' | '2nd Interview' | 'reject' | 'KIV' | '',
   });
+  const [remarkDialogOpen, setRemarkDialogOpen] = useState(false);
+  const [remarkText, setRemarkText] = useState('');
+  const [remarkInterview, setRemarkInterview] = useState<Interview | null>(null);
+  const [remarkIndex, setRemarkIndex] = useState<number | null>(null);
 
-  const scheduledInterviews = interviews.filter(i => i.status === 'Scheduled');
-  const completedInterviews = interviews.filter(i => i.status === 'Completed');
+  useEffect(() => {
+    return subscribeToInterviews(
+      (records) => {
+        setInterviews(records.map((record) => ({
+          id: record.id,
+          candidateId: record.candidateId ?? '',
+          candidateName: record.candidateName ?? '',
+          position: record.position ?? '',
+          interviewer: record.interviewer ?? '',
+          interviewDateTime: record.interview_datetime ?? null,
+          interviewType: record.interview_type ?? null,
+          interviewStatus: record.interview_status ?? 'pending',
+          recruiterRemarks: record.recruiter_remark ?? [],
+          hiringManagerRemarks: record.hiringmanager_remark ?? [],
+          departmentManagerRemarks: record.departmentmanager_remark ?? [],
+        })));
+      },
+      (error) => {
+        console.error(error);
+        toast.error('Unable to load interviews from Firebase.');
+      }
+    );
+  }, []);
 
-  const getCandidateDecision = (candidateId: string) => {
-    const candidate = mockShortlistedCandidates.find((item) => item.candidateId === candidateId);
-    return candidate?.hiringManagerDecision ?? '-';
-  };
+  const pendingInterviews = interviews.filter(
+    (interview) => !interview.interviewDateTime
+      && (interview.interviewStatus === 'pending' || interview.interviewStatus === '2nd Interview')
+  );
+  const scheduledInterviews = interviews.filter(
+    (interview) => Boolean(interview.interviewDateTime) && interview.interviewStatus === 'pending'
+  );
+  const completedInterviews = interviews.filter(
+    (interview) => interview.interviewStatus !== 'pending'
+      && interview.interviewStatus !== '2nd Interview'
+  );
 
-  const handleScheduleInterview = () => {
+  const handleScheduleInterview = async () => {
     if (!newInterview.candidateId || !newInterview.interviewDate || !newInterview.interviewTime) {
       toast.error('Please fill in all required fields');
       return;
@@ -73,30 +105,19 @@ export function Interviews() {
       return;
     }
 
-    const candidate = mockShortlistedCandidates.find(c => c.candidateId === newInterview.candidateId);
-    if (!candidate) return;
-
-    const interview: Interview = {
-      id: `int-${interviews.length + 1}`,
-      candidateId: newInterview.candidateId,
-      candidateName: candidate.candidateName,
-      position: candidate.jobPosition,
-      interviewer: user?.name || '',
-      date: newInterview.interviewDate,
-      time: newInterview.interviewTime,
-      type: newInterview.interviewType,
-      status: 'Scheduled',
-    };
-
-    setInterviews([...interviews, interview]);
-    setDialogOpen(false);
-    setNewInterview({
-      candidateId: '',
-      interviewDate: '',
-      interviewTime: '',
-      interviewType: 'Technical',
-    });
-    toast.success('Interview scheduled successfully');
+    try {
+      await scheduleInterview(newInterview.candidateId, {
+        interview_datetime: `${newInterview.interviewDate}T${newInterview.interviewTime}`,
+        interview_type: newInterview.interviewType,
+        interviewer: user?.name || '',
+      });
+      setDialogOpen(false);
+      setNewInterview({ candidateId: '', interviewDate: '', interviewTime: '', interviewType: 'Technical Interview' });
+      toast.success('Interview scheduled successfully');
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to schedule interview.');
+    }
   };
 
   const handleOpenDecisionDialog = (interview: Interview) => {
@@ -104,7 +125,7 @@ export function Interviews() {
     setDecisionDialogOpen(true);
   };
 
-  const handleMakeDecision = () => {
+  const handleMakeDecision = async () => {
     if (!decision.decision) {
       toast.error('Please select a decision');
       return;
@@ -112,25 +133,76 @@ export function Interviews() {
 
     if (!selectedInterview) return;
 
-    // Update interview with decision
-    setInterviews(prev =>
-      prev.map(i =>
-        i.id === selectedInterview.id
-          ? {
-              ...i,
-              feedback: decision.remark,
-              status: 'Completed' as const,
-            }
-          : i
-      )
-    );
-
-    setDecisionDialogOpen(false);
-    setDecision({ decision: '', remark: '' });
-    toast.success(`Decision: ${decision.decision}`);
+    try {
+      await updateInterviewDecision(selectedInterview.id, decision.decision);
+      setDecisionDialogOpen(false);
+      setDecision({ decision: '' });
+      toast.success(`Decision: ${decision.decision}`);
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to save interview decision.');
+    }
   };
 
-  const InterviewCard = ({ interview }: { interview: Interview }) => (
+  const openRemarkDialog = (
+    interview: Interview,
+    role: 'recruiter' | 'hiringmanager' | 'departmentmanager',
+    index: number | null = null,
+    initialRemark = ''
+  ) => {
+    setRemarkInterview(interview);
+    setRemarkIndex(index);
+    setRemarkText(initialRemark);
+    setRemarkDialogOpen(true);
+  };
+
+  const handleAddRemark = async () => {
+    if (!remarkInterview || !remarkText.trim()) return;
+    try {
+      const role = isHiringManager
+        ? 'hiringmanager'
+        : isDepartmentManager
+          ? 'departmentmanager'
+          : 'recruiter';
+      const entry = {
+        name: user?.name || (isHiringManager ? 'Hiring Manager' : isDepartmentManager ? 'Department Manager' : 'Recruiter'),
+        remark: remarkText.trim(),
+      };
+      if (remarkIndex === null) {
+        await addInterviewRemark(remarkInterview.id, role, entry);
+      } else {
+        await updateInterviewRemark(remarkInterview.id, role, remarkIndex, entry);
+      }
+      setRemarkDialogOpen(false);
+      setRemarkText('');
+      setRemarkIndex(null);
+      toast.success(remarkIndex === null ? 'Remark added.' : 'Remark updated.');
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to add remark.');
+    }
+  };
+
+  const InterviewCard = ({ interview }: { interview: Interview }) => {
+    const interviewDate = interview.interviewDateTime
+      ? new Date(interview.interviewDateTime)
+      : null;
+    const remarkRole = isHiringManager
+      ? 'hiringmanager'
+      : isDepartmentManager
+        ? 'departmentmanager'
+        : 'recruiter';
+    const userRemarkEntries = remarkRole === 'hiringmanager'
+      ? (interview.hiringManagerRemarks ?? [])
+      : remarkRole === 'departmentmanager'
+        ? (interview.departmentManagerRemarks ?? [])
+        : (interview.recruiterRemarks ?? []);
+    const userRemarkIndex = userRemarkEntries.findIndex(
+      (item) => item.name === user?.name
+    );
+    const hasUserRemark = userRemarkIndex >= 0;
+    const remarks = [...(interview.recruiterRemarks ?? []), ...(interview.hiringManagerRemarks ?? [])];
+    return (
     <Card className="hover:shadow-md transition-shadow">
       <CardContent className="pt-6">
         <div className="space-y-4">
@@ -139,48 +211,68 @@ export function Interviews() {
               <h3 className="text-lg font-semibold">{interview.candidateName}</h3>
               <p className="text-sm text-muted-foreground">{interview.position}</p>
             </div>
-            <Badge variant="outline">
-              {interview.type}
-            </Badge>
+            <Badge variant="outline">{interview.interviewType || 'Not scheduled'}</Badge>
           </div>
 
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div className="flex items-center gap-2 text-muted-foreground">
               <Calendar className="h-4 w-4" />
-              {interview.date}
+              {interviewDate ? interviewDate.toLocaleDateString() : 'Date not set'}
             </div>
             <div className="flex items-center gap-2 text-muted-foreground">
               <Clock className="h-4 w-4" />
-              {interview.time}
+              {interviewDate ? interviewDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Time not set'}
             </div>
             <div className="flex items-center gap-2 text-muted-foreground col-span-2">
               <User className="h-4 w-4" />
-              Interviewer: {interview.interviewer}
+              Interviewer: {interview.interviewer || 'Not assigned'}
             </div>
             <div className="flex items-center gap-2 text-muted-foreground col-span-2">
               <span className="h-4 w-4" />
-              Decision:
+              Status:
               <Badge variant="outline" className="text-black">
-                {getCandidateDecision(interview.candidateId)}
+                {interview.interviewStatus}
               </Badge>
             </div>
           </div>
 
-          {interview.feedback && (
+          {remarks.length > 0 && (
             <div className="p-3 bg-secondary rounded-lg">
-              <p className="text-sm font-medium mb-1">Feedback/Remark:</p>
-              <p className="text-sm text-muted-foreground">{interview.feedback}</p>
+              <p className="text-sm font-medium mb-1">Remarks:</p>
+              {(interview.recruiterRemarks ?? []).map((item, index) => (
+                <p key={`recruiter-${index}`} className="text-sm text-muted-foreground">
+                  Recruiter ({item.name}): {item.remark}
+                </p>
+              ))}
+              {(interview.hiringManagerRemarks ?? []).map((item, index) => (
+                <p key={`manager-${index}`} className="text-sm text-muted-foreground">
+                  Hiring Manager ({item.name}): {item.remark}
+                </p>
+              ))}
+              {(interview.departmentManagerRemarks ?? []).map((item, index) => (
+                <p key={`department-manager-${index}`} className="text-sm text-muted-foreground">
+                  Department Manager ({item.name}): {item.remark}
+                </p>
+              ))}
             </div>
           )}
 
           <div className="flex gap-2">
-            {interview.status === 'Scheduled' && (
+            {interview.interviewDateTime && (
               <>
-                <Button variant="outline" size="sm" className="flex-1">
-                  <Video className="mr-2 h-4 w-4" />
-                  Join Meeting
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => openRemarkDialog(
+                    interview,
+                    remarkRole,
+                    hasUserRemark ? userRemarkIndex : null,
+                    hasUserRemark ? userRemarkEntries[userRemarkIndex].remark : ''
+                  )}
+                >
+                  {hasUserRemark ? 'Edit Remark' : 'Add Remark'}
                 </Button>
-                {isHiringManager && (
+                {isHiringManager && interview.interviewStatus === 'pending' && (
                   <Button
                     variant="default"
                     size="sm"
@@ -192,16 +284,22 @@ export function Interviews() {
                 )}
               </>
             )}
+            {!interview.interviewDateTime && canWrite && (
+              <Button variant="outline" size="sm" onClick={() => setDialogOpen(true)}>
+                Schedule
+              </Button>
+            )}
           </div>
         </div>
       </CardContent>
     </Card>
-  );
+    );
+  };
 
   if (!hasPermission('Interview Management', 'read')) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">You don't have permission to access this feature.</p>
+        <p className="text-muted-foreground">You don&apos;t have permission to access this feature.</p>
       </div>
     );
   }
@@ -238,9 +336,9 @@ export function Interviews() {
                       <SelectValue placeholder="Select candidate" />
                     </SelectTrigger>
                     <SelectContent>
-                      {mockShortlistedCandidates.map((candidate) => (
-                        <SelectItem key={candidate.candidateId} value={candidate.candidateId}>
-                          {candidate.candidateName} - {candidate.jobPosition}
+                      {pendingInterviews.map((candidate) => (
+                        <SelectItem key={candidate.id} value={candidate.id}>
+                          {candidate.candidateName} - {candidate.position}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -250,16 +348,16 @@ export function Interviews() {
                   <Label htmlFor="interviewType">Interview Type *</Label>
                   <Select
                     value={newInterview.interviewType}
-                    onValueChange={(value: any) => setNewInterview({ ...newInterview, interviewType: value })}
+                    onValueChange={(value) => setNewInterview({ ...newInterview, interviewType: value as typeof newInterview.interviewType })}
                   >
                     <SelectTrigger id="interviewType">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Phone">Phone Interview</SelectItem>
-                      <SelectItem value="Technical">Technical Interview</SelectItem>
-                      <SelectItem value="HR">HR Interview</SelectItem>
-                      <SelectItem value="Final">Final Interview</SelectItem>
+                      <SelectItem value="Phone Interview">Phone Interview</SelectItem>
+                      <SelectItem value="Technical Interview">Technical Interview</SelectItem>
+                      <SelectItem value="HR Interview">HR Interview</SelectItem>
+                      <SelectItem value="Final Interview">Final Interview</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -298,8 +396,11 @@ export function Interviews() {
         )}
       </div>
 
-      <Tabs defaultValue="scheduled" className="space-y-4">
+      <Tabs defaultValue="pending" className="space-y-4">
         <TabsList>
+          <TabsTrigger value="pending">
+            Pending ({pendingInterviews.length})
+          </TabsTrigger>
           <TabsTrigger value="scheduled">
             Scheduled ({scheduledInterviews.length})
           </TabsTrigger>
@@ -307,6 +408,23 @@ export function Interviews() {
             Completed ({completedInterviews.length})
           </TabsTrigger>
         </TabsList>
+
+        <TabsContent value="pending" className="space-y-4">
+          {pendingInterviews.length > 0 ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {pendingInterviews.map((interview) => (
+                <InterviewCard key={interview.id} interview={interview} />
+              ))}
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <Calendar className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-muted-foreground">No interviews pending scheduling</p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
 
         <TabsContent value="scheduled" className="space-y-4">
           {scheduledInterviews.length > 0 ? (
@@ -348,7 +466,7 @@ export function Interviews() {
           <DialogHeader>
             <DialogTitle>Interview Decision</DialogTitle>
             <DialogDescription>
-              Make a decision for {selectedInterview?.candidateName}'s interview
+              Make a decision for {selectedInterview?.candidateName}&apos;s interview
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -356,29 +474,18 @@ export function Interviews() {
               <Label htmlFor="decision">Decision *</Label>
               <Select
                 value={decision.decision}
-                onValueChange={(value: any) => setDecision({ ...decision, decision: value })}
+                onValueChange={(value) => setDecision({ ...decision, decision: value as typeof decision.decision })}
               >
                 <SelectTrigger id="decision">
                   <SelectValue placeholder="Select decision" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="Approve to Hire">Approve to Hire</SelectItem>
+                  <SelectItem value="accept">Accept</SelectItem>
                   <SelectItem value="2nd Interview">2nd Interview</SelectItem>
-                  <SelectItem value="Reject">Reject</SelectItem>
+                  <SelectItem value="reject">Reject</SelectItem>
                   <SelectItem value="KIV">Keep In View (KIV)</SelectItem>
-                  <SelectItem value="Recommendation">Recommendation</SelectItem>
                 </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="remark">Remark</Label>
-              <Textarea
-                id="remark"
-                placeholder="Add your remarks about the interview..."
-                value={decision.remark}
-                onChange={(e) => setDecision({ ...decision, remark: e.target.value })}
-                rows={4}
-              />
+                </Select>
             </div>
           </div>
           <DialogFooter>
@@ -387,6 +494,33 @@ export function Interviews() {
             </Button>
             <Button onClick={handleMakeDecision}>
               Submit Decision
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={remarkDialogOpen} onOpenChange={setRemarkDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{remarkIndex === null ? 'Add Remark' : 'Edit Remark'}</DialogTitle>
+            <DialogDescription>
+              {remarkIndex === null ? 'Add a remark' : 'Edit your remark'} for {remarkInterview?.candidateName}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-4">
+            <Label htmlFor="interview-remark">Remark</Label>
+            <Textarea
+              id="interview-remark"
+              value={remarkText}
+              onChange={(event) => setRemarkText(event.target.value)}
+              placeholder="Enter your remark..."
+              rows={4}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRemarkDialogOpen(false)}>Cancel</Button>
+            <Button onClick={() => void handleAddRemark()} disabled={!remarkText.trim()}>
+              {remarkIndex === null ? 'Save Remark' : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>

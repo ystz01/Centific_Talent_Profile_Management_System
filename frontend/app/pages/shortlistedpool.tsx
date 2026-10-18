@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { UserCheck, CheckCircle, XCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -20,26 +20,75 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockShortlistedCandidates, mockJobPositions } from '@/data/mockData';
 import { ShortlistedCandidate } from '@/types';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
+import {
+  subscribeToOpenJobPositions,
+  subscribeToShortlistedPool,
+  updateShortlistedDecision,
+  type FirestoreJobPosition,
+} from '@/lib/firebase';
 
 export function ShortlistedPool() {
   const { hasPermission, user } = useAuth();
   const canWrite = hasPermission('Shortlisted Pool', 'write');
   const isHiringManager = user?.role === 'Hiring Manager';
   const canManageCandidates = canWrite && isHiringManager;
-  const [candidates, setCandidates] = useState<ShortlistedCandidate[]>(mockShortlistedCandidates);
+  const [candidates, setCandidates] = useState<ShortlistedCandidate[]>([]);
   const [selectedJob, setSelectedJob] = useState<string>('all');
+  const [activeJobs, setActiveJobs] = useState<Array<FirestoreJobPosition & { id: string }>>([]);
 
-  const filteredCandidates = selectedJob === 'all'
+  useEffect(() => {
+    return subscribeToOpenJobPositions(
+      setActiveJobs,
+      (error) => {
+        console.error(error);
+        toast.error('Unable to load active job positions.');
+      }
+    );
+  }, []);
+
+  useEffect(() => {
+    return subscribeToShortlistedPool(
+      (records) => {
+        setCandidates(records.map((record) => ({
+          id: record.id,
+          candidateId: record.candidateId ?? '',
+          candidateName: record.candidateName ?? 'Unnamed candidate',
+          phone: record.phone ?? '',
+          email: record.email ?? '',
+          jobId: record.jobId ?? '',
+          jobPosition: record.position ?? record.jobName ?? 'Unknown job',
+          position: record.position ?? record.jobName ?? 'Unknown job',
+          hiringManagerDecision: record.hiringManagerDecision as ShortlistedCandidate['hiringManagerDecision'] ?? null,
+          hiringManagerRemark: record.hiringManagerRemark ?? undefined,
+          recruiterRemark: record.recruiterRemark ?? undefined,
+          strength: record.strength ?? null,
+          weakness: record.weakness ?? null,
+          status: record.status === 'Approved' || record.status === 'Rejected'
+            ? record.status
+            : 'Shortlisted',
+        })));
+      },
+      (error) => {
+        console.error(error);
+        toast.error('Unable to load the shortlisted pool from Firebase.');
+      }
+    );
+  }, []);
+
+  const effectiveSelectedJob = selectedJob !== 'all' && activeJobs.some((job) => job.id === selectedJob)
+    ? selectedJob
+    : 'all';
+
+  const filteredCandidates = effectiveSelectedJob === 'all'
     ? candidates
-    : candidates.filter(c => c.jobId === selectedJob);
+    : candidates.filter(c => c.jobId === effectiveSelectedJob);
 
-  const getStrength = (candidate: ShortlistedCandidate) => candidate.recruiterRemark || '-';
+  const getStrength = (candidate: ShortlistedCandidate) => candidate.strength || '-';
 
-  const getGaps = (candidate: ShortlistedCandidate) => candidate.hiringManagerRemark || '-';
+  const getGaps = (candidate: ShortlistedCandidate) => candidate.weakness || '-';
 
   const getDecisionStatus = (candidate: ShortlistedCandidate) => {
     if (candidate.hiringManagerDecision === 'Approve to Hire') return 'Approved';
@@ -47,40 +96,40 @@ export function ShortlistedPool() {
     return 'Pending';
   };
 
-  const handleApprove = (id: string) => {
-    setCandidates(prev =>
-      prev.map(c =>
-        c.id === id
-          ? {
-              ...c,
-              status: 'Approved' as const,
-              hiringManagerDecision: 'Approve to Hire',
-            }
-          : c
-      )
-    );
-    toast.success('Candidate approved');
+  const handleApprove = async (id: string) => {
+    try {
+      const candidate = candidates.find((item) => item.id === id);
+      await updateShortlistedDecision(id, 'Approve to Hire', candidate ? {
+        id: candidate.id,
+        candidateId: candidate.candidateId,
+        candidateName: candidate.candidateName,
+        phone: candidate.phone,
+        email: candidate.email,
+        jobId: candidate.jobId,
+        jobName: candidate.jobPosition,
+        position: candidate.position ?? candidate.jobPosition,
+      } : undefined);
+      toast.success('Candidate approved');
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to approve candidate.');
+    }
   };
 
-  const handleReject = (id: string) => {
-    setCandidates(prev =>
-      prev.map(c =>
-        c.id === id
-          ? {
-              ...c,
-              status: 'Rejected' as const,
-              hiringManagerDecision: 'Reject',
-            }
-          : c
-      )
-    );
-    toast.error('Candidate rejected');
+  const handleReject = async (id: string) => {
+    try {
+      await updateShortlistedDecision(id, 'Reject');
+      toast.error('Candidate rejected');
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to reject candidate.');
+    }
   };
 
   if (!hasPermission('Shortlisted Pool', 'read')) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">You don't have permission to access this feature.</p>
+        <p className="text-muted-foreground">You don&apos;t have permission to access this feature.</p>
       </div>
     );
   }
@@ -98,15 +147,15 @@ export function ShortlistedPool() {
         <CardContent className="pt-6">
           <div className="flex items-center gap-4">
             <label className="text-sm font-medium">Filter by Job:</label>
-            <Select value={selectedJob} onValueChange={setSelectedJob}>
+            <Select value={effectiveSelectedJob} onValueChange={setSelectedJob}>
               <SelectTrigger className="w-[300px]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Jobs</SelectItem>
-                {mockJobPositions.map((job) => (
+                {activeJobs.map((job) => (
                   <SelectItem key={job.id} value={job.id}>
-                    {job.positionName}
+                    {job.Position}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -134,6 +183,7 @@ export function ShortlistedPool() {
                   <TableHead className="text-black font-bold">Email</TableHead>
                   <TableHead className="text-black font-bold">Strength</TableHead>
                   <TableHead className="text-black font-bold">Gaps</TableHead>
+                  <TableHead className="text-black font-bold">Job</TableHead>
                   <TableHead className="text-black font-bold">Status</TableHead>
                   {canManageCandidates && (
                     <TableHead className="text-black font-bold">Actions</TableHead>
@@ -148,12 +198,13 @@ export function ShortlistedPool() {
                       <TableCell className="font-medium">{candidate.candidateName}</TableCell>
                       <TableCell>{candidate.phone}</TableCell>
                       <TableCell>{candidate.email}</TableCell>
-                      <TableCell className="max-w-[200px]">
-                        <p className="truncate">{getStrength(candidate)}</p>
+                      <TableCell className="w-[24%] align-top whitespace-normal break-words">
+                        <p className="whitespace-normal break-words">{getStrength(candidate)}</p>
                       </TableCell>
-                      <TableCell className="max-w-[200px]">
-                        <p className="truncate">{getGaps(candidate)}</p>
+                      <TableCell className="w-[24%] align-top whitespace-normal break-words">
+                        <p className="whitespace-normal break-words">{getGaps(candidate)}</p>
                       </TableCell>
+                      <TableCell>{candidate.position || candidate.jobPosition || '-'}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-black">
                           {getDecisionStatus(candidate)}
@@ -190,7 +241,7 @@ export function ShortlistedPool() {
                   ))
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={canManageCandidates ? 8 : 7} className="text-center py-8">
+                    <TableCell colSpan={canManageCandidates ? 9 : 8} className="text-center py-8">
                       <p className="text-muted-foreground">No shortlisted candidates found</p>
                     </TableCell>
                   </TableRow>

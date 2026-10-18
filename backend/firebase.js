@@ -1,21 +1,64 @@
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+import { getApps, initializeApp } from "firebase/app";
+import { addDoc, collection, getDocs, getFirestore, query, serverTimestamp, where } from "firebase/firestore";
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey: "AIzaSyAUkRHBdy_gvLx7-DXfLpYXGRMhxHegGB8",
-  authDomain: "centifictpms.firebaseapp.com",
-  projectId: "centifictpms",
-  storageBucket: "centifictpms.firebasestorage.app",
-  messagingSenderId: "33543603282",
-  appId: "1:33543603282:web:93918a26c2461e4fbf8b8b",
-  measurementId: "G-F590VDVDS4"
+  apiKey: requiredFirebaseEnv(
+    'NEXT_PUBLIC_FIREBASE_API_KEY',
+    process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  ),
+  authDomain: requiredFirebaseEnv(
+    'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN',
+    process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  ),
+  projectId: requiredFirebaseEnv(
+    'NEXT_PUBLIC_FIREBASE_PROJECT_ID',
+    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  ),
+  storageBucket: requiredFirebaseEnv(
+    'NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET',
+    process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  ),
+  messagingSenderId: requiredFirebaseEnv(
+    'NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID',
+    process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  ),
+  appId: requiredFirebaseEnv(
+    'NEXT_PUBLIC_FIREBASE_APP_ID',
+    process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+  ),
 };
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
+
+export const db = getFirestore(app);
+export const JOB_POSITION_COLLECTION = "job_position";
+
+export async function createOpenJobPosition({
+  createdBy,
+  department,
+  position,
+  requiredCandidates,
+  salaryRange,
+}) {
+  const payload = {
+    Created_by: createdBy,
+    Created_date: serverTimestamp(),
+    Department: department,
+    Position: position,
+    Required_Candidate: requiredCandidates,
+    Status: true,
+    salary_range: salaryRange,
+  };
+
+  const documentReference = await addDoc(collection(db, JOB_POSITION_COLLECTION), payload);
+  return documentReference.id;
+}
+
+export async function listOpenJobPositions() {
+  const snapshot = await getDocs(query(collection(db, JOB_POSITION_COLLECTION), where("Status", "==", true)));
+
+  return snapshot.docs.map((documentSnapshot) => ({
+    id: documentSnapshot.id,
+    ...documentSnapshot.data(),
+  }));
+}

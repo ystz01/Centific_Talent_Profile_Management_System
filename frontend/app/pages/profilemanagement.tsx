@@ -1,16 +1,26 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { UserCircle, Save } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
+import { changeCurrentUserPassword, updateCurrentUserProfile } from '@/lib/firebase';
 import { toast } from 'sonner';
 
 export function ProfileManagement() {
-  const { user } = useAuth();
+  const { setUser, user } = useAuth();
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: user?.name || '',
     email: user?.email || '',
@@ -19,25 +29,62 @@ export function ProfileManagement() {
     confirmPassword: '',
   });
 
-  const handleSave = () => {
-    if (formData.newPassword && formData.newPassword !== formData.confirmPassword) {
-      toast.error('New passwords do not match');
+  useEffect(() => {
+    setFormData((current) => ({
+      ...current,
+      name: user?.name || '',
+      email: user?.email || '',
+    }));
+  }, [user]);
+
+  const handleSave = async () => {
+    const changingPassword = Boolean(
+      formData.currentPassword || formData.newPassword || formData.confirmPassword
+    );
+
+    if (changingPassword && formData.newPassword !== formData.confirmPassword) {
+      setAlertMessage('Your Confirm New Password Does not Match with Your New Password. Try Again.');
       return;
     }
 
-    if (formData.newPassword && !formData.currentPassword) {
+    if (changingPassword && !formData.currentPassword) {
       toast.error('Please enter your current password');
       return;
     }
 
-    // Mock save - in production, this would update the backend
-    toast.success('Profile updated successfully');
-    setFormData({
-      ...formData,
-      currentPassword: '',
-      newPassword: '',
-      confirmPassword: '',
-    });
+    try {
+      if (changingPassword) {
+        try {
+          await changeCurrentUserPassword(formData.currentPassword, formData.newPassword);
+        } catch (error) {
+          const authError = error as { code?: string };
+          if (
+            authError.code === 'auth/wrong-password' ||
+            authError.code === 'auth/invalid-credential'
+          ) {
+            setAlertMessage('Current Password Incorrect. Please try again.');
+            return;
+          }
+          throw error;
+        }
+      }
+
+      if (user && formData.name.trim() !== user.name) {
+        await updateCurrentUserProfile(formData.name);
+        setUser({ ...user, name: formData.name.trim() });
+      }
+
+      toast.success('Profile updated successfully');
+      setFormData((current) => ({
+        ...current,
+        currentPassword: '',
+        newPassword: '',
+        confirmPassword: '',
+      }));
+    } catch (error) {
+      console.error('Failed to update profile:', error);
+      toast.error('Failed to update profile');
+    }
   };
 
   return (
@@ -137,6 +184,25 @@ export function ProfileManagement() {
           Save Changes
         </Button>
       </div>
+
+      <Dialog
+        open={Boolean(alertMessage)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAlertMessage(null);
+          }
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Password Update Error</DialogTitle>
+            <DialogDescription>{alertMessage}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button onClick={() => setAlertMessage(null)}>OK</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,39 +1,76 @@
 'use client';
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import type { Permission, Role, User } from '@/types';
-import { mockUsers } from '@/data/mockData';
+import { createContext, useContext, useEffect, useState } from 'react';
+import type { Permission, User } from '@/types';
 import { rolePermissions } from '@/types';
+import { auth, fetchUserProfileById, firebaseSignIn, firebaseSignOut, normalizeRole, type FirestoreUserProfile } from '@/lib/firebase';
+import { onAuthStateChanged } from 'firebase/auth';
 
 type AuthContextType = {
   user: User | null;
   setUser: (user: User | null) => void;
+  ready: boolean;
   hasPermission: (feature: string, access: 'read' | 'write') => boolean;
-  switchRole: (role: Role) => void;
-  signIn: (email: string, password: string) => User | null;
-  signOut: () => void;
+  signIn: (email: string, password: string) => Promise<User | null>;
+  signOut: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const storageKey = 'centific-user';
 
-const roleToUser = (role: Role): User | null => {
-  return mockUsers.find((user) => user.role === role) ?? null;
+const normalizeUserProfile = (
+  profile: (FirestoreUserProfile & { id: string }) | User | null,
+  fallbackEmail = ''
+): User | null => {
+  if (!profile) {
+    return null;
+  }
+
+  const role = normalizeRole('role' in profile && profile.role ? profile.role : 'roles' in profile ? profile.roles : undefined);
+
+  if (!role || !profile.name) {
+    return null;
+  }
+
+  return {
+    id: profile.id,
+    name: profile.name,
+    email: profile.email || fallbackEmail,
+    role,
+    avatar: 'avatar' in profile ? profile.avatar : undefined,
+  };
 };
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem(storageKey);
-    if (stored) {
-      try {
-        setUser(JSON.parse(stored) as User);
-      } catch {
-        localStorage.removeItem(storageKey);
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (!firebaseUser) {
+        setUser(null);
+        setReady(true);
+        return;
       }
-    }
+
+      const loadUserProfile = async () => {
+        const firestoreProfile = await fetchUserProfileById(firebaseUser.uid);
+        const firestoreUser = normalizeUserProfile(firestoreProfile, firebaseUser.email ?? '');
+        if (firestoreUser) {
+          setUser(firestoreUser);
+          setReady(true);
+          return;
+        }
+
+        setUser(null);
+        setReady(true);
+      };
+
+      void loadUserProfile();
+    });
+
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -44,23 +81,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
-  const signIn = (email: string, password: string) => {
-    void password;
+  const signIn = async (email: string, password: string) => {
+    setReady(false);
     const normalizedEmail = email.trim().toLowerCase();
-    const signedInUser = mockUsers.find((item) => item.email.toLowerCase() === normalizedEmail) ?? null;
+    const credential = await firebaseSignIn(normalizedEmail, password);
+    const firestoreProfile = await fetchUserProfileById(credential.user.uid);
+    const signedInUser = normalizeUserProfile(firestoreProfile, credential.user.email ?? normalizedEmail);
+
     setUser(signedInUser);
+    setReady(true);
     return signedInUser;
   };
 
-  const signOut = () => {
+  const signOut = async () => {
+    await firebaseSignOut();
     setUser(null);
-  };
-
-  const switchRole = (role: Role) => {
-    const nextUser = roleToUser(role);
-    if (nextUser) {
-      setUser(nextUser);
-    }
+    setReady(true);
   };
 
   const hasPermission = (feature: string, access: 'read' | 'write') => {
@@ -70,14 +106,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return access === 'read' ? Boolean(permission?.read) : Boolean(permission?.write);
   };
 
-  const value = useMemo<AuthContextType>(() => ({
+  const value: AuthContextType = {
     user,
     setUser,
+    ready,
     hasPermission,
-    switchRole,
     signIn,
     signOut,
-  }), [user]);
+  };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
