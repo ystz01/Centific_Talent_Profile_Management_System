@@ -23,6 +23,7 @@ export interface Candidate {
   education: string;
   status:
     | 'Approve to Hire'
+    | 'Hired'
     | '2nd Interview'
     | 'KIV'
     | 'Reject'
@@ -38,12 +39,18 @@ export interface Interview {
   candidateName: string;
   position: string;
   interviewer: string;
-  date: string;
-  time: string;
-  type: 'Phone' | 'Technical' | 'HR' | 'Final';
-  status: 'Scheduled' | 'Completed' | 'Cancelled';
-  notes?: string;
+  interviewDateTime?: string | null;
+  interviewType?: 'Technical Interview' | 'Phone Interview' | 'HR Interview' | 'Final Interview' | null;
+  interviewStatus?: 'pending' | 'accept' | 'reject' | '2nd Interview' | 'KIV';
+  recruiterRemarks?: Array<{ name: string; remark: string }>;
+  hiringManagerRemarks?: Array<{ name: string; remark: string }>;
+  departmentManagerRemarks?: Array<{ name: string; remark: string }>;
+  date?: string;
+  time?: string;
+  type?: 'Phone' | 'Technical' | 'HR' | 'Final';
+  status?: 'Scheduled' | 'Completed' | 'Cancelled';
   feedback?: string;
+  notes?: string;
 }
 
 export interface JobPosition {
@@ -66,6 +73,7 @@ export interface ShortlistedCandidate {
   email: string;
   jobId: string;
   jobPosition: string;
+  position?: string;
   interviewDate?: string;
   interviewTime?: string;
   hiringManagerDecision?:
@@ -77,6 +85,8 @@ export interface ShortlistedCandidate {
     | null;
   hiringManagerRemark?: string;
   recruiterRemark?: string;
+  strength?: string | null;
+  weakness?: string | null;
   status:
     | 'Shortlisted'
     | 'Interview Scheduled'

@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from 'react';
-import { Plus, Edit, Trash2, Eye } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Plus, Edit, Eye, CheckCircle2, Ban } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { formatSalaryRange } from '@/lib/utils';
 import {
   Table,
   TableBody,
@@ -26,18 +27,31 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockJobPositions } from '@/data/mockData';
 import { JobPosition } from '@/types';
 import { toast } from 'sonner';
+import { createJobPosition, subscribeToJobPositions, updateJobPosition, updateJobPositionStatus } from '@/lib/firebase';
+
+type JobFormState = {
+  positionName: string;
+  requiredCandidates: number;
+  skillsNeeded: string;
+  salaryRange: string;
+  department: string;
+};
 
 export function JobPositions() {
   const { hasPermission, user } = useAuth();
   const canWrite = hasPermission('Job Positions', 'write');
-  const [jobs, setJobs] = useState<JobPosition[]>(mockJobPositions);
+  const [jobs, setJobs] = useState<JobPosition[]>([]);
+  const [loadingJobs, setLoadingJobs] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [formMode, setFormMode] = useState<'create' | 'edit'>('create');
+  const [editingJobId, setEditingJobId] = useState<string | null>(null);
   const [viewDialogOpen, setViewDialogOpen] = useState(false);
+  const [statusDialogOpen, setStatusDialogOpen] = useState(false);
+  const [statusJob, setStatusJob] = useState<JobPosition | null>(null);
   const [selectedJob, setSelectedJob] = useState<JobPosition | null>(null);
-  const [newJob, setNewJob] = useState({
+  const [newJob, setNewJob] = useState<JobFormState>({
     positionName: '',
     requiredCandidates: 1,
     skillsNeeded: '',
@@ -45,26 +59,32 @@ export function JobPositions() {
     department: '',
   });
 
-  const handleCreateJob = () => {
-    if (!newJob.positionName || !newJob.skillsNeeded || !newJob.salaryRange || !newJob.department) {
-      toast.error('Please fill in all required fields');
-      return;
-    }
+  useEffect(() => {
+    const unsubscribe = subscribeToJobPositions((records) => {
+      setJobs(
+        records.map((record) => {
+          const createdDate = record.Created_date?.toDate().toISOString().split('T')[0] || '';
 
-    const job: JobPosition = {
-      id: `job-${jobs.length + 1}`,
-      positionName: newJob.positionName,
-      requiredCandidates: newJob.requiredCandidates,
-      skillsNeeded: newJob.skillsNeeded.split(',').map(s => s.trim()),
-      salaryRange: newJob.salaryRange,
-      department: newJob.department,
-      createdBy: user?.name || '',
-      createdDate: new Date().toISOString().split('T')[0],
-      status: 'Open',
-    };
+          return {
+            id: record.id,
+            positionName: record.Position,
+            requiredCandidates: record.Required_Candidate,
+            skillsNeeded: record.skillsNeeded || [],
+            salaryRange: record.salary_range,
+            department: record.Department,
+            createdBy: record.Created_by,
+            createdDate,
+            status: record.Status ? 'Open' : 'Closed',
+          };
+        })
+      );
+      setLoadingJobs(false);
+    });
 
-    setJobs([...jobs, job]);
-    setDialogOpen(false);
+    return () => unsubscribe();
+  }, []);
+
+  const resetJobForm = () => {
     setNewJob({
       positionName: '',
       requiredCandidates: 1,
@@ -72,7 +92,106 @@ export function JobPositions() {
       salaryRange: '',
       department: '',
     });
-    toast.success('Job position created successfully');
+    setEditingJobId(null);
+    setFormMode('create');
+  };
+
+  const openCreateDialog = () => {
+    resetJobForm();
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (job: JobPosition) => {
+    setFormMode('edit');
+    setEditingJobId(job.id);
+    setNewJob({
+      positionName: job.positionName,
+      requiredCandidates: job.requiredCandidates,
+      skillsNeeded: job.skillsNeeded.join(', '),
+      salaryRange: job.salaryRange,
+      department: job.department,
+    });
+    setDialogOpen(true);
+  };
+
+  const openStatusDialog = (job: JobPosition) => {
+    setStatusJob(job);
+    setStatusDialogOpen(true);
+  };
+
+  const handleCreateJob = async () => {
+    if (!newJob.positionName || !newJob.skillsNeeded || !newJob.salaryRange || !newJob.department) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+
+    try {
+      await createJobPosition({
+        createdBy: user?.name || '',
+        department: newJob.department,
+        position: newJob.positionName,
+        requiredCandidates: newJob.requiredCandidates,
+        salaryRange: newJob.salaryRange,
+        skillsNeeded: newJob.skillsNeeded.split(',').map((skill) => skill.trim()).filter(Boolean),
+      });
+
+      setDialogOpen(false);
+      setNewJob({
+        positionName: '',
+        requiredCandidates: 1,
+        skillsNeeded: '',
+        salaryRange: '',
+        department: '',
+      });
+      toast.success('Job position created successfully');
+    } catch (error) {
+      console.error('Failed to create job position:', error);
+      toast.error('Failed to create job position');
+    }
+  };
+
+  const handleUpdateJob = async () => {
+    if (!editingJobId) {
+      return;
+    }
+
+    if (!newJob.positionName || !newJob.skillsNeeded || !newJob.salaryRange || !newJob.department) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+
+    try {
+      await updateJobPosition(editingJobId, {
+        department: newJob.department,
+        position: newJob.positionName,
+        requiredCandidates: newJob.requiredCandidates,
+        salaryRange: newJob.salaryRange,
+        skillsNeeded: newJob.skillsNeeded.split(',').map((skill) => skill.trim()).filter(Boolean),
+      });
+
+      setDialogOpen(false);
+      resetJobForm();
+      toast.success('Job position updated successfully');
+    } catch (error) {
+      console.error('Failed to update job position:', error);
+      toast.error('Failed to update job position');
+    }
+  };
+
+  const handleStatusUpdate = async (nextStatus: 'Open' | 'Closed') => {
+    if (!statusJob) {
+      return;
+    }
+
+    try {
+      await updateJobPositionStatus(statusJob.id, nextStatus === 'Open');
+      setStatusDialogOpen(false);
+      setStatusJob(null);
+      toast.success(`Job position marked as ${nextStatus.toLowerCase()}`);
+    } catch (error) {
+      console.error('Failed to update job status:', error);
+      toast.error('Failed to update job status');
+    }
   };
 
   const handleViewJob = (job: JobPosition) => {
@@ -83,7 +202,7 @@ export function JobPositions() {
   if (!hasPermission('Job Positions', 'read')) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">You don't have permission to access this feature.</p>
+        <p className="text-muted-foreground">You do not have permission to access this feature.</p>
       </div>
     );
   }
@@ -95,18 +214,23 @@ export function JobPositions() {
           <h1 className="text-3xl font-bold">Job Positions</h1>
         </div>
         {canWrite && (
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Dialog open={dialogOpen} onOpenChange={(open) => {
+            setDialogOpen(open);
+            if (!open) {
+              resetJobForm();
+            }
+          }}>
             <DialogTrigger asChild>
-              <Button>
+              <Button onClick={openCreateDialog}>
                 <Plus className="mr-2 h-4 w-4" />
                 Create Job
               </Button>
             </DialogTrigger>
             <DialogContent className="max-w-2xl">
               <DialogHeader>
-                <DialogTitle>Create New Job Position</DialogTitle>
+                <DialogTitle>{formMode === 'edit' ? 'Edit Job Position' : 'Create New Job Position'}</DialogTitle>
                 <DialogDescription>
-                  Fill in the details for the new job position
+                  Fill in the details for the job position
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
@@ -143,9 +267,10 @@ export function JobPositions() {
                     <Label htmlFor="salaryRange">Salary Range *</Label>
                     <Input
                       id="salaryRange"
-                      placeholder="e.g., $120,000 - $150,000"
+                      placeholder="e.g., RM 5,000.00 - RM 8,000.00"
                       value={newJob.salaryRange}
                       onChange={(e) => setNewJob({ ...newJob, salaryRange: e.target.value })}
+                      onBlur={(e) => setNewJob({ ...newJob, salaryRange: formatSalaryRange(e.target.value) })}
                     />
                   </div>
                 </div>
@@ -164,8 +289,8 @@ export function JobPositions() {
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleCreateJob}>
-                  Create Job
+                <Button onClick={formMode === 'edit' ? handleUpdateJob : handleCreateJob}>
+                  {formMode === 'edit' ? 'Save Changes' : 'Create Job'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -178,6 +303,9 @@ export function JobPositions() {
           <CardTitle>All Job Positions ({jobs.length})</CardTitle>
         </CardHeader>
         <CardContent>
+          {loadingJobs ? (
+            <p className="py-6 text-sm text-muted-foreground">Loading job positions...</p>
+          ) : null}
           <Table>
             <TableHeader>
               <TableRow>
@@ -205,7 +333,7 @@ export function JobPositions() {
                       ))}
                     </ul>
                   </TableCell>
-                  <TableCell>{job.salaryRange}</TableCell>
+                  <TableCell>{formatSalaryRange(job.salaryRange)}</TableCell>
                   <TableCell>
                     <Badge variant={job.status === 'Open' ? 'default' : 'secondary'}>
                       {job.status}
@@ -220,11 +348,11 @@ export function JobPositions() {
                       </Button>
                       {canWrite && (
                         <>
-                          <Button variant="ghost" size="sm">
+                          <Button variant="ghost" size="sm" onClick={() => openEditDialog(job)}>
                             <Edit className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="sm">
-                            <Trash2 className="h-4 w-4" />
+                          <Button variant="ghost" size="sm" onClick={() => openStatusDialog(job)}>
+                            <Ban className="h-4 w-4" />
                           </Button>
                         </>
                       )}
@@ -288,6 +416,46 @@ export function JobPositions() {
           )}
           <DialogFooter>
             <Button onClick={() => setViewDialogOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Status Dialog */}
+      <Dialog open={statusDialogOpen} onOpenChange={setStatusDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Change Job Status</DialogTitle>
+            <DialogDescription>
+              Choose whether this job position should be Open or Closed.
+            </DialogDescription>
+          </DialogHeader>
+          {statusJob && (
+            <div className="space-y-4 py-4">
+              <p className="text-sm text-muted-foreground">
+                Current status: <span className="font-medium text-foreground">{statusJob.status}</span>
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <Button
+                  variant={statusJob.status === 'Open' ? 'default' : 'outline'}
+                  onClick={() => handleStatusUpdate('Open')}
+                >
+                  <CheckCircle2 className="mr-2 h-4 w-4" />
+                  Open
+                </Button>
+                <Button
+                  variant={statusJob.status === 'Closed' ? 'default' : 'outline'}
+                  onClick={() => handleStatusUpdate('Closed')}
+                >
+                  <Ban className="mr-2 h-4 w-4" />
+                  Closed
+                </Button>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStatusDialogOpen(false)}>
+              Cancel
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

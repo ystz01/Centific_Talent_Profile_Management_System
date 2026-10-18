@@ -1,7 +1,7 @@
-"use client";
+'use client';
 
-import { useState } from 'react';
-import { UserPlus, Trash2, Edit } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Edit, Trash2, UserPlus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -32,47 +32,172 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockUsers } from '@/data/mockData';
-import { User, Role } from '@/types';
 import { toast } from 'sonner';
+import {
+  createUserAccount,
+  deleteUserAccount,
+  normalizeRole,
+  subscribeToUsersCollection,
+  upsertUserProfile,
+  type FirestoreUserProfile,
+} from '@/lib/firebase';
+import type { Role, User } from '@/types';
+
+type UserFormState = {
+  name: string;
+  email: string;
+  role: Role;
+  password: string;
+  confirmPassword: string;
+};
+
+function normalizeUserRecord(record: FirestoreUserProfile & { id: string }): User | null {
+  const role = normalizeRole(record.role ?? record.roles);
+  if (!record.name || !record.email || !role) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    name: record.name,
+    email: record.email,
+    role,
+  };
+}
 
 export function UserManagement() {
-  const { hasPermission, user: currentUser } = useAuth();
-  const [users, setUsers] = useState<User[]>(mockUsers);
+  const { hasPermission, ready, user: currentUser } = useAuth();
+  const [users, setUsers] = useState<User[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [newUser, setNewUser] = useState({
+  const [formMode, setFormMode] = useState<'create' | 'edit'>('create');
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [userToDelete, setUserToDelete] = useState<User | null>(null);
+  const [newUser, setNewUser] = useState<UserFormState>({
     name: '',
     email: '',
-    role: 'Recruiter' as Role,
+    role: 'Recruiter',
+    password: '',
+    confirmPassword: '',
   });
 
-  const handleAddUser = () => {
-    const user: User = {
-      id: String(users.length + 1),
-      name: newUser.name,
-      email: newUser.email,
-      role: newUser.role,
-    };
+  useEffect(() => {
+    if (!ready) {
+      return;
+    }
 
-    setUsers([...users, user]);
-    setDialogOpen(false);
-    setNewUser({ name: '', email: '', role: 'Recruiter' });
-    toast.success('User added successfully');
+    if (!currentUser) {
+      return;
+    }
+
+    const unsubscribe = subscribeToUsersCollection((records) => {
+      setUsers(records.map(normalizeUserRecord).filter((record): record is User => Boolean(record)));
+      setLoadingUsers(false);
+    });
+
+    return () => unsubscribe();
+  }, [currentUser, ready]);
+
+  const resetForm = () => {
+    setNewUser({
+      name: '',
+      email: '',
+      role: 'Recruiter',
+      password: '',
+      confirmPassword: '',
+    });
+    setFormMode('create');
+    setEditingUserId(null);
   };
 
-  const handleRemoveUser = (id: string) => {
-    if (id === currentUser?.id) {
+  const openCreateDialog = () => {
+    resetForm();
+    setDialogOpen(true);
+  };
+
+  const openEditDialog = (selectedUser: User) => {
+    setFormMode('edit');
+    setEditingUserId(selectedUser.id);
+    setNewUser({
+      name: selectedUser.name,
+      email: selectedUser.email,
+      role: selectedUser.role,
+      password: '',
+      confirmPassword: '',
+    });
+    setDialogOpen(true);
+  };
+
+  const handleSaveUser = async () => {
+    if (!newUser.name || !newUser.email) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+    if (formMode === 'create' && newUser.password.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+    if (formMode === 'create' && newUser.password !== newUser.confirmPassword) {
+      toast.error('Passwords do not match');
+      return;
+    }
+
+    try {
+      const payload: FirestoreUserProfile = {
+        name: newUser.name,
+        email: newUser.email,
+        roles: newUser.role,
+      };
+
+      if (formMode === 'edit' && editingUserId) {
+        await upsertUserProfile(editingUserId, payload);
+        toast.success('User updated successfully');
+      } else {
+        await createUserAccount({
+          name: newUser.name,
+          email: newUser.email, 
+          password: newUser.password,
+          role: newUser.role,
+        });
+        toast.success('User added successfully');
+      }
+
+      setDialogOpen(false);
+      resetForm();
+    } catch (error) {
+      console.error('Failed to save user:', error);
+      toast.error('Failed to save user');
+    }
+  };
+
+  const handleRemoveUser = async (selectedUser: User) => {
+    if (selectedUser.id === currentUser?.id) {
       toast.error('You cannot remove your own account');
       return;
     }
-    setUsers(users.filter(u => u.id !== id));
-    toast.success('User removed successfully');
+
+    try {
+      await deleteUserAccount(selectedUser.id, selectedUser.email);
+      setUserToDelete(null);
+      toast.success('User removed successfully');
+    } catch (error) {
+      console.error('Failed to remove user:', error);
+      toast.error('Failed to remove user');
+    }
   };
+
+  if (!ready) {
+    return (
+      <div className="flex items-center justify-center h-full p-6">
+        <p className="text-muted-foreground">Loading user access...</p>
+      </div>
+    );
+  }
 
   if (!hasPermission('User Management', 'read')) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">You don't have permission to access this feature.</p>
+        <p className="text-muted-foreground">You don&apos;t have permission to access this feature.</p>
       </div>
     );
   }
@@ -87,18 +212,28 @@ export function UserManagement() {
           <p className="text-muted-foreground">Manage user accounts and roles</p>
         </div>
         {canWrite && (
-          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+          <Dialog
+            open={dialogOpen}
+            onOpenChange={(open) => {
+              setDialogOpen(open);
+              if (!open) {
+                resetForm();
+              }
+            }}
+          >
             <DialogTrigger asChild>
-              <Button>
+              <Button onClick={openCreateDialog}>
                 <UserPlus className="mr-2 h-4 w-4" />
                 Add User
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Add New User</DialogTitle>
+                <DialogTitle>{formMode === 'edit' ? 'Edit User' : 'Add New User'}</DialogTitle>
                 <DialogDescription>
-                  Create a new user account and assign a role
+                  {formMode === 'edit'
+                    ? 'Update the user profile and role'
+                    : 'Create a new user account and assign a role'}
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
@@ -121,6 +256,32 @@ export function UserManagement() {
                     onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
                   />
                 </div>
+                {formMode === 'create' && (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="password">Password</Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        placeholder="At least 6 characters"
+                        value={newUser.password}
+                        onChange={(e) => setNewUser({ ...newUser, password: e.target.value })}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="confirmPassword">Confirm Password</Label>
+                      <Input
+                        id="confirmPassword"
+                        type="password"
+                        placeholder="Re-enter the password"
+                        value={newUser.confirmPassword}
+                        onChange={(e) =>
+                          setNewUser({ ...newUser, confirmPassword: e.target.value })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="role">Role</Label>
                   <Select
@@ -143,11 +304,8 @@ export function UserManagement() {
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button
-                  onClick={handleAddUser}
-                  disabled={!newUser.name || !newUser.email}
-                >
-                  Add User
+                <Button onClick={handleSaveUser} disabled={!newUser.name || !newUser.email}>
+                  {formMode === 'edit' ? 'Save Changes' : 'Add User'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -160,6 +318,9 @@ export function UserManagement() {
           <CardTitle>All Users ({users.length})</CardTitle>
         </CardHeader>
         <CardContent>
+          {!ready || loadingUsers ? (
+            <p className="py-6 text-sm text-muted-foreground">Loading users...</p>
+          ) : null}
           <Table>
             <TableHeader>
               <TableRow>
@@ -170,26 +331,24 @@ export function UserManagement() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.map((user) => (
-                <TableRow key={user.id}>
-                  <TableCell className="font-medium">{user.name}</TableCell>
-                  <TableCell>{user.email}</TableCell>
+              {users.map((rowUser) => (
+                <TableRow key={rowUser.id}>
+                  <TableCell className="font-medium">{rowUser.name}</TableCell>
+                  <TableCell>{rowUser.email}</TableCell>
                   <TableCell>
-                    <Badge variant="outline">
-                      {user.role}
-                    </Badge>
+                    <Badge variant="outline">{rowUser.role}</Badge>
                   </TableCell>
                   {canWrite && (
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
-                        <Button variant="ghost" size="sm">
+                        <Button variant="ghost" size="sm" onClick={() => openEditDialog(rowUser)}>
                           <Edit className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="ghost"
                           size="sm"
-                          onClick={() => handleRemoveUser(user.id)}
-                          disabled={user.id === currentUser?.id}
+                          onClick={() => setUserToDelete(rowUser)}
+                          disabled={rowUser.id === currentUser?.id}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -202,6 +361,36 @@ export function UserManagement() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog
+        open={Boolean(userToDelete)}
+        onOpenChange={(open) => {
+          if (!open) {
+          setUserToDelete(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+          <DialogTitle>Delete user account?</DialogTitle>
+          <DialogDescription>
+            This action cannot be undone. The account and user profile for{' '}
+            <strong>{userToDelete?.email}</strong> will be permanently removed.
+          </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+          <Button variant="outline" onClick={() => setUserToDelete(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={() => userToDelete && void handleRemoveUser(userToDelete)}
+          >
+            Confirm delete
+          </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Role Permissions Reference */}
       <Card>

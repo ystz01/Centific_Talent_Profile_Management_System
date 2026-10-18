@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from 'react';
-import { CheckCircle, XCircle, Clock, FileText } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckCircle, Clock, Eye, XCircle } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -13,169 +13,95 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockHiringMatrix, mockShortlistedCandidates } from '@/data/mockData';
-import { HiringMatrix as HiringMatrixType } from '@/types';
+import { subscribeToCandidatesCollection, subscribeToInterviews } from '@/lib/firebase';
 import { toast } from 'sonner';
 
-export function InterviewTracking() {
-  const { hasPermission, user } = useAuth();
-  const canApprove = user?.role === 'Department Manager';
-  const isHiringManager = user?.role === 'Hiring Manager';
-  const [matrices, setMatrices] = useState<HiringMatrixType[]>(mockHiringMatrix);
-  const [generateDialogOpen, setGenerateDialogOpen] = useState(false);
-  const [selectedCandidate, setSelectedCandidate] = useState<any>(null);
-  const [matrixData, setMatrixData] = useState({
-    salary: '',
-    jobRequisition: '',
-  });
+type InterviewRecord = {
+  id: string;
+  candidateId: string;
+  candidateName: string;
+  phone: string;
+  email: string;
+  interviewDateTime: string | null;
+  position: string;
+  interviewStatus: 'pending' | 'accept' | 'reject' | '2nd Interview' | 'KIV';
+  recruiterRemarks: Array<{ name: string; remark: string }>;
+  hiringManagerRemarks: Array<{ name: string; remark: string }>;
+  departmentManagerRemarks: Array<{ name: string; remark: string }>;
+};
 
-  const pendingMatrices = matrices.filter(r => r.status === 'Pending');
-  const approvedMatrices = matrices.filter(r => r.status === 'Approved');
-  const rejectedMatrices = matrices.filter(r => r.status === 'Rejected');
+const statusLabels = {
+  pending: 'Pending',
+  accept: 'Accept',
+  reject: 'Reject',
+  KIV: 'Keep In View',
+} as const;
 
-  // Get approved candidates for hiring matrix generation
-  const approvedCandidates = mockShortlistedCandidates.filter(
-    c => c.hiringManagerDecision === 'Approve to Hire'
-  );
+const formatRemarks = (remarks: Array<{ name: string; remark: string }>) =>
+  remarks.length > 0
+    ? remarks.map((item) => `${item.name}: ${item.remark}`).join('\n')
+    : '-';
 
-  const handleOpenGenerateDialog = (candidate: any) => {
-    setSelectedCandidate(candidate);
-    setMatrixData({
-      salary: '',
-      jobRequisition: candidate.jobPosition,
-    });
-    setGenerateDialogOpen(true);
-  };
+const formatInterviewDate = (dateTime: string | null) => {
+  if (!dateTime) return '-';
 
-  const handleGenerateMatrix = () => {
-    if (!matrixData.salary || !matrixData.jobRequisition) {
-      toast.error('Please fill in all required fields');
-      return;
-    }
+  const date = new Date(dateTime);
+  return Number.isNaN(date.getTime())
+    ? dateTime
+    : date.toLocaleString([], {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      });
+};
 
-    const newMatrix: HiringMatrixType = {
-      id: `hm-${matrices.length + 1}`,
-      candidateId: selectedCandidate.candidateId,
-      candidateName: selectedCandidate.candidateName,
-      position: selectedCandidate.jobPosition,
-      department: 'Engineering', // Mock department
-      phone: selectedCandidate.phone,
-      email: selectedCandidate.email,
-      interviewDate: `${selectedCandidate.interviewDate} ${selectedCandidate.interviewTime}`,
-      salary: matrixData.salary,
-      hiringManagerRemark: selectedCandidate.hiringManagerRemark || '',
-      recruiterRemark: selectedCandidate.recruiterRemark || '',
-      jobRequisition: matrixData.jobRequisition,
-      status: 'Pending',
-      requestedBy: user?.name || '',
-      requestedDate: new Date().toISOString().split('T')[0],
-    };
-
-    setMatrices([...matrices, newMatrix]);
-    setGenerateDialogOpen(false);
-    toast.success('Interview tracking entry created successfully');
-  };
-
-  const handleApprove = (id: string) => {
-    setMatrices(prev =>
-      prev.map(req =>
-        req.id === id ? {
-          ...req,
-          status: 'Approved' as const,
-          approvedBy: user?.name,
-          approvedDate: new Date().toISOString().split('T')[0],
-        } : req
-      )
-    );
-    toast.success('Interview tracking approved');
-  };
-
-  const handleReject = (id: string) => {
-    setMatrices(prev =>
-      prev.map(req =>
-        req.id === id ? { ...req, status: 'Rejected' as const } : req
-      )
-    );
-    toast.error('Interview tracking rejected');
-  };
-
-  const MatrixTable = ({ data, showActions }: { data: HiringMatrixType[], showActions: boolean }) => (
+function InterviewTable({ records, candidateContacts }: {
+  records: InterviewRecord[];
+  candidateContacts: Record<string, { phone: string; email: string }>;
+}) {
+  return (
     <div className="border rounded-lg overflow-x-auto">
       <Table>
         <TableHeader>
           <TableRow className="bg-blue-100 dark:bg-blue-900/20">
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">NO</TableHead>
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Name</TableHead>
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Phone</TableHead>
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Email</TableHead>
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Interview Date/TIME</TableHead>
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Hire Y/N</TableHead>
+            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Interview Date/Time</TableHead>
+            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Recruiter Remark</TableHead>
+            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Department Manager Remark</TableHead>
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Hiring Manager Remark</TableHead>
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Job Requisition</TableHead>
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Centific talent acquisition Remark</TableHead>
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Salary</TableHead>
-            {showActions && canApprove && <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Actions</TableHead>}
+            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Job Position</TableHead>
+            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Status</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {data.length > 0 ? (
-            data.map((matrix, index) => (
-              <TableRow key={matrix.id}>
-                <TableCell className="font-medium">{index + 1}</TableCell>
-                <TableCell className="font-medium">{matrix.candidateName}</TableCell>
-                <TableCell>{matrix.phone}</TableCell>
-                <TableCell>{matrix.email}</TableCell>
-                <TableCell>{matrix.interviewDate}</TableCell>
+          {records.length > 0 ? (
+            records.map((record) => (
+              <TableRow key={record.id}>
+                <TableCell className="font-medium">{record.candidateName || '-'}</TableCell>
+                <TableCell>{candidateContacts[record.candidateId]?.phone || '-'}</TableCell>
+                <TableCell>{candidateContacts[record.candidateId]?.email || '-'}</TableCell>
+                <TableCell>{formatInterviewDate(record.interviewDateTime)}</TableCell>
+                <TableCell className="max-w-[260px] whitespace-pre-wrap break-words">
+                  {formatRemarks(record.recruiterRemarks)}
+                </TableCell>
+                <TableCell className="max-w-[260px] whitespace-pre-wrap break-words">
+                  {formatRemarks(record.departmentManagerRemarks)}
+                </TableCell>
+                <TableCell className="max-w-[260px] whitespace-pre-wrap break-words">
+                  {formatRemarks(record.hiringManagerRemarks)}
+                </TableCell>
+                <TableCell>{record.position || '-'}</TableCell>
                 <TableCell>
-                  <span className="text-green-600 font-bold">Y</span>
+                  <Badge variant="outline">{statusLabels[record.interviewStatus as keyof typeof statusLabels] ?? record.interviewStatus}</Badge>
                 </TableCell>
-                <TableCell className="max-w-[200px]">
-                  <p className="truncate">{matrix.hiringManagerRemark}</p>
-                </TableCell>
-                <TableCell>{matrix.jobRequisition}</TableCell>
-                <TableCell className="max-w-[200px]">
-                  <p className="truncate">{matrix.recruiterRemark}</p>
-                </TableCell>
-                <TableCell>{matrix.salary}</TableCell>
-                {showActions && canApprove && (
-                  <TableCell>
-                    <div className="flex gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleApprove(matrix.id)}
-                      >
-                        <CheckCircle className="h-4 w-4 mr-1" />
-                        Approve
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => handleReject(matrix.id)}
-                      >
-                        <XCircle className="h-4 w-4 mr-1" />
-                        Reject
-                      </Button>
-                    </div>
-                  </TableCell>
-                )}
               </TableRow>
             ))
           ) : (
             <TableRow>
-              <TableCell colSpan={showActions && canApprove ? 11 : 10} className="text-center py-8">
-                <p className="text-muted-foreground">No interview tracking records found</p>
+              <TableCell colSpan={9} className="text-center py-8">
+                <p className="text-muted-foreground">No interview records found</p>
               </TableCell>
             </TableRow>
           )}
@@ -183,165 +109,113 @@ export function InterviewTracking() {
       </Table>
     </div>
   );
+}
+
+export function InterviewTracking() {
+  const { hasPermission } = useAuth();
+  const [interviews, setInterviews] = useState<InterviewRecord[]>([]);
+  const [candidateContacts, setCandidateContacts] = useState<Record<string, { phone: string; email: string }>>({});
+
+  useEffect(() => {
+    const unsubscribeInterviews = subscribeToInterviews(
+      (records) => {
+        setInterviews(records.map((record) => ({
+          id: record.id,
+          candidateId: record.candidateId ?? '',
+          candidateName: record.candidateName ?? '',
+          phone: '',
+          email: '',
+          interviewDateTime: record.interview_datetime ?? null,
+          position: record.position ?? '',
+          interviewStatus: record.interview_status ?? 'pending',
+          recruiterRemarks: record.recruiter_remark ?? [],
+          hiringManagerRemarks: record.hiringmanager_remark ?? [],
+          departmentManagerRemarks: record.departmentmanager_remark ?? [],
+        })));
+      },
+      (error) => {
+        console.error(error);
+        toast.error('Unable to load interview records from Firebase.');
+      }
+    );
+    const unsubscribeCandidates = subscribeToCandidatesCollection(
+      (records) => {
+        setCandidateContacts(Object.fromEntries(records.map((candidate) => [
+          candidate.id,
+          { phone: candidate.phone ?? '', email: candidate.email ?? '' },
+        ])));
+      },
+      (error) => {
+        console.error(error);
+        toast.error('Unable to load candidate contact details.');
+      }
+    );
+
+    return () => {
+      unsubscribeInterviews();
+      unsubscribeCandidates();
+    };
+  }, []);
+
+  const pending = interviews.filter((record) => record.interviewStatus === 'pending');
+  const accepted = interviews.filter((record) => record.interviewStatus === 'accept');
+  const rejected = interviews.filter((record) => record.interviewStatus === 'reject');
+  const keepInView = interviews.filter((record) => record.interviewStatus === 'KIV');
 
   if (!hasPermission('Hiring Matrix Approval', 'read')) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">You don't have permission to access this feature.</p>
+        <p className="text-muted-foreground">You don&apos;t have permission to access this feature.</p>
       </div>
     );
   }
 
+  const tabs = [
+    { value: 'pending', label: 'Pending', count: pending.length, icon: Clock, records: pending },
+    { value: 'accept', label: 'Accept', count: accepted.length, icon: CheckCircle, records: accepted },
+    { value: 'reject', label: 'Reject', count: rejected.length, icon: XCircle, records: rejected },
+    { value: 'KIV', label: 'Keep In View', count: keepInView.length, icon: Eye, records: keepInView },
+  ];
+
   return (
     <div className="p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Interview Tracking</h1>
-        </div>
+      <div>
+        <h1 className="text-3xl font-bold">Interview Tracking</h1>
+        <p className="text-muted-foreground">Track interview records by their current status.</p>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Pending Approvals
-            </CardTitle>
-            <Clock className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{pendingMatrices.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              {canApprove ? 'Require your action' : 'Awaiting approval'}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Approved Records
-            </CardTitle>
-            <CheckCircle className="h-4 w-4 text-green-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{approvedMatrices.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Ready to proceed
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">
-              Rejected Records
-            </CardTitle>
-            <XCircle className="h-4 w-4 text-red-600" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{rejectedMatrices.length}</div>
-            <p className="text-xs text-muted-foreground mt-1">
-              Not approved
-            </p>
-          </CardContent>
-        </Card>
+      <div className="grid gap-4 md:grid-cols-4">
+        {tabs.map(({ label, count, icon: Icon }) => (
+          <Card key={label}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
+              <Icon className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{count}</div>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
-      {/* Generate Tracking for Approved Candidates - Hiring Manager Only */}
-      {isHiringManager && approvedCandidates.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Approved Candidates (Ready for Interview Tracking)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-2">
-              {approvedCandidates.map((candidate) => (
-                <div key={candidate.id} className="flex items-center justify-between p-3 border rounded-lg">
-                  <div>
-                    <p className="font-medium">{candidate.candidateName}</p>
-                    <p className="text-sm text-muted-foreground">{candidate.jobPosition}</p>
-                  </div>
-                  <Button onClick={() => handleOpenGenerateDialog(candidate)}>
-                    <FileText className="mr-2 h-4 w-4" />
-                    Create Interview Tracking
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Interview Tracking Table */}
       <Card>
         <CardContent className="pt-6">
           <Tabs defaultValue="pending">
             <TabsList>
-              <TabsTrigger value="pending">
-                Pending ({pendingMatrices.length})
-              </TabsTrigger>
-              <TabsTrigger value="approved">
-                Approved ({approvedMatrices.length})
-              </TabsTrigger>
-              <TabsTrigger value="rejected">
-                Rejected ({rejectedMatrices.length})
-              </TabsTrigger>
+              {tabs.map(({ value, label, count }) => (
+                <TabsTrigger key={value} value={value}>
+                  {label} ({count})
+                </TabsTrigger>
+              ))}
             </TabsList>
-
-            <TabsContent value="pending" className="mt-6">
-              <MatrixTable data={pendingMatrices} showActions={true} />
-            </TabsContent>
-
-            <TabsContent value="approved" className="mt-6">
-              <MatrixTable data={approvedMatrices} showActions={false} />
-            </TabsContent>
-
-            <TabsContent value="rejected" className="mt-6">
-              <MatrixTable data={rejectedMatrices} showActions={false} />
-            </TabsContent>
+            {tabs.map(({ value, records }) => (
+              <TabsContent key={value} value={value} className="mt-6">
+                <InterviewTable records={records} candidateContacts={candidateContacts} />
+              </TabsContent>
+            ))}
           </Tabs>
         </CardContent>
       </Card>
-
-      {/* Generate Interview Tracking Dialog */}
-      <Dialog open={generateDialogOpen} onOpenChange={setGenerateDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create Interview Tracking</DialogTitle>
-            <DialogDescription>
-              Complete the details for {selectedCandidate?.candidateName}'s interview tracking
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="salary">Salary Offer *</Label>
-              <Input
-                id="salary"
-                placeholder="e.g., $120,000"
-                value={matrixData.salary}
-                onChange={(e) => setMatrixData({ ...matrixData, salary: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="jobRequisition">Job Requisition *</Label>
-              <Input
-                id="jobRequisition"
-                value={matrixData.jobRequisition}
-                onChange={(e) => setMatrixData({ ...matrixData, jobRequisition: e.target.value })}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setGenerateDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleGenerateMatrix}>
-              Create Tracking
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

@@ -1,10 +1,5 @@
-import { Navbar } from '@/components/navbar';
-import { TalentPool } from '../pages/talentpool';
+import { redirect } from 'next/navigation';
 
 export default function TalentPoolRoute() {
-  return (
-    <Navbar>
-      <TalentPool />
-    </Navbar>
-  );
+  redirect('/candidate-profiles');
 }

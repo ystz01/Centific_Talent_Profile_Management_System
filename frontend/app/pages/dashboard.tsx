@@ -1,39 +1,61 @@
-"use client";
+'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import { Users, Calendar, FileCheck } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { mockCandidates, mockInterviews, mockHiringMatrix } from '@/data/mockData';
 import { useAuth } from '@/contexts/AuthContext';
+import {
+  subscribeToCandidatesCollection,
+  subscribeToHiringMatrices,
+  subscribeToInterviews,
+  type FirestoreCandidate,
+  type FirestoreHiringMatrix,
+  type FirestoreInterview,
+} from '@/lib/firebase';
+import { toast } from 'sonner';
+
+type CandidateRecord = FirestoreCandidate & { id: string };
+type InterviewRecord = FirestoreInterview & { id: string };
+type MatrixRecord = FirestoreHiringMatrix & { id: string };
+
+function isUpcoming(interview: InterviewRecord) {
+  if (!interview.interview_datetime) return false;
+  const date = new Date(interview.interview_datetime).getTime();
+  return Number.isFinite(date) && date >= Date.now();
+}
+
+function formatInterviewDate(value?: string | null) {
+  if (!value) return 'Time not set';
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
+}
 
 export function Dashboard() {
   const { user } = useAuth();
+  const [candidates, setCandidates] = useState<CandidateRecord[]>([]);
+  const [interviews, setInterviews] = useState<InterviewRecord[]>([]);
+  const [matrices, setMatrices] = useState<MatrixRecord[]>([]);
 
-  const stats = [
-    {
-      title: 'Total Candidates',
-      value: mockCandidates.length,
-      icon: Users,
-    },
-    {
-      title: 'Upcoming Interviews',
-      value: mockInterviews.filter(i => i.status === 'Scheduled').length,
-      icon: Calendar,
-    },
-  ];
+  useEffect(() => subscribeToCandidatesCollection(setCandidates, () => toast.error('Unable to load candidates.')), []);
+  useEffect(() => subscribeToInterviews(setInterviews, () => toast.error('Unable to load interviews.')), []);
+  useEffect(() => subscribeToHiringMatrices(setMatrices, () => toast.error('Unable to load hiring matrix.')), []);
 
-  if (user?.role !== 'Recruiter') {
-    stats.push({
-      title: 'Pending Approvals',
-      value: mockHiringMatrix.filter(h => h.status === 'Pending').length,
-      icon: FileCheck,
-    });
-  }
+  const activeCandidates = candidates.filter((candidate) => candidate.status?.toLowerCase() === 'active');
+  const upcomingInterviews = useMemo(() => {
+    const upcoming = interviews.filter(isUpcoming);
+    if (user?.role === 'Recruiter') {
+      return upcoming.filter((interview) => interview.interviewer?.trim() === user.name.trim());
+    }
+    return upcoming;
+  }, [interviews, user]);
 
-  const recentCandidates = mockCandidates.slice(0, 5);
-  const upcomingInterviews = mockInterviews
-    .filter(i => i.status === 'Scheduled')
-    .slice(0, 3);
+  const pendingApproval =
+    user?.role === 'Department Manager'
+      ? matrices.filter((matrix) => matrix.approval_status === 'pending').length
+      : interviews.filter((interview) => interview.interview_status === 'pending').length;
+
+  const recentCandidates = [...activeCandidates].slice(0, 5);
 
   return (
     <div className="p-6 space-y-6">
@@ -41,71 +63,65 @@ export function Dashboard() {
         <h1 className="text-3xl font-bold">Welcome back, {user?.name}</h1>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        {stats.map((stat, index) => (
-          <Card key={index}>
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Total Candidates</CardTitle>
+            <Users className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{activeCandidates.length}</div></CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">Upcoming Interviews</CardTitle>
+            <Calendar className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent><div className="text-2xl font-bold">{upcomingInterviews.length}</div></CardContent>
+        </Card>
+        {user?.role !== 'Recruiter' && (
+          <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                {stat.title}
-              </CardTitle>
-              <stat.icon className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium text-muted-foreground">Pending Approvals</CardTitle>
+              <FileCheck className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stat.value}</div>
-            </CardContent>
+            <CardContent><div className="text-2xl font-bold">{pendingApproval}</div></CardContent>
           </Card>
-        ))}
+        )}
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Recent Candidates */}
         <Card>
-          <CardHeader>
-            <CardTitle>Recent Candidates</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>Recent Candidates</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-4">
               {recentCandidates.map((candidate) => (
                 <div key={candidate.id} className="flex items-center justify-between">
                   <div>
                     <p className="font-medium">{candidate.name}</p>
-                    <p className="text-sm text-muted-foreground">{candidate.position}</p>
+                    <p className="text-sm text-muted-foreground">{candidate.email}</p>
                   </div>
-                  <div className="text-right">
-                    <Badge variant="outline">
-                      {candidate.status}
-                    </Badge>
-                  </div>
+                  <Badge variant="outline">Active</Badge>
                 </div>
               ))}
+              {recentCandidates.length === 0 && <p className="text-sm text-muted-foreground">No active candidates</p>}
             </div>
           </CardContent>
         </Card>
 
-        {/* Upcoming Interviews */}
         <Card>
-          <CardHeader>
-            <CardTitle>Upcoming Interviews</CardTitle>
-          </CardHeader>
+          <CardHeader><CardTitle>Upcoming Interviews</CardTitle></CardHeader>
           <CardContent>
             <div className="space-y-4">
-              {upcomingInterviews.length > 0 ? (
-                upcomingInterviews.map((interview) => (
-                  <div key={interview.id} className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">{interview.candidateName}</p>
-                      <p className="text-sm text-muted-foreground">{interview.type} Interview</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="text-sm font-medium">{interview.date}</p>
-                      <p className="text-sm text-muted-foreground">{interview.time}</p>
-                    </div>
+              {upcomingInterviews.slice(0, 5).map((interview) => (
+                <div key={interview.id} className="flex items-center justify-between">
+                  <div>
+                    <p className="font-medium">{interview.candidateName ?? 'Unnamed candidate'}</p>
+                    <p className="text-sm text-muted-foreground">{interview.interview_type ?? 'Interview'}</p>
                   </div>
-                ))
-              ) : (
-                <p className="text-sm text-muted-foreground">No upcoming interviews</p>
-              )}
+                  <p className="text-right text-sm">{formatInterviewDate(interview.interview_datetime)}</p>
+                </div>
+              ))}
+              {upcomingInterviews.length === 0 && <p className="text-sm text-muted-foreground">No upcoming interviews</p>}
             </div>
           </CardContent>
         </Card>

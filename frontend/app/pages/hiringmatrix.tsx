@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle, XCircle, Clock, Eye, Edit2, ArrowLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { formatSalary } from '@/lib/utils';
 import {
   Table,
   TableBody,
@@ -32,12 +33,23 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
-import { mockHiringMatrix } from '@/data/mockData';
 import { HiringMatrix as HiringMatrixType } from '@/types';
 import { toast } from 'sonner';
+import {
+  createHiringMatrix,
+  updateHiringMatrix,
+  subscribeToCandidatesCollection,
+  subscribeToHiringMatrices,
+  subscribeToInterviews,
+  updateCandidateStatus,
+  updateHiringMatrixApproval,
+  type FirestoreCandidate,
+  type FirestoreHiringMatrix,
+} from '@/lib/firebase';
 
 interface HiringMatrixFormData {
   // Required fields
+  candidateId: string;
   employeeName: string;
   jobTitle: string;
   startDate: string;
@@ -86,12 +98,49 @@ type FormSectionKey =
   | 'workPass'
   | 'organization';
 
+const DEFAULT_WORK_LOCATION = '30th Floor, Menara BHL, No. 51, Jalan Sultan Ahmad Shah, 10050 Georgetown, Penang, Malaysia';
+
+function mapFirestoreHiringMatrix(record: FirestoreHiringMatrix & { id: string }): HiringMatrixType {
+  const status = record.approval_status === 'approved'
+    ? 'Approved'
+    : record.approval_status === 'rejected'
+      ? 'Rejected'
+      : 'Pending';
+
+  return {
+    id: record.id,
+    candidateId: record.candidate_id ?? '',
+    candidateName: record.employee_name ?? '',
+    position: record.job_title ?? '',
+    department: record.department_name ?? '',
+    phone: record.candidate_mobile_number ?? '',
+    email: record.candidate_personal_email ?? '',
+    interviewDate: record.start_date ?? '',
+    salary: record.basic_salary_offered ?? '',
+    hiringManagerRemark: `Employment Type: ${record.employment_type ?? ''}, Work Pass: ${record.apply_work_pass_required ?? ''}, Email Required: ${record.email_required ?? ''}`,
+    recruiterRemark: JSON.stringify(record),
+    jobRequisition: '',
+    status,
+    requestedBy: record.created_by ?? '',
+    requestedDate: record.created_at?.toDate().toISOString().split('T')[0] ?? '',
+    approvedBy: record.approved_by ?? undefined,
+    approvedDate: record.approved_at?.toDate().toISOString().split('T')[0] ?? undefined,
+    rejectionReason: record.rejection_reason ?? undefined,
+  };
+}
 
 export function HiringMatrix() {
   const { hasPermission, user } = useAuth();
   const canCreateMatrix = user?.role === 'Hiring Manager';
   const canApprove = user?.role === 'Department Manager';
-  const [matrices, setMatrices] = useState<HiringMatrixType[]>(mockHiringMatrix);
+  const [matrices, setMatrices] = useState<HiringMatrixType[]>([]);
+  const [acceptedCandidates, setAcceptedCandidates] = useState<Array<{
+    id: string;
+    name: string;
+    position: string;
+    email: string;
+    phone: string;
+  }>>([]);
   const [pageMode, setPageMode] = useState<'list' | 'form'>('list');
   
   const [formDialogOpen, setFormDialogOpen] = useState(false);
@@ -101,6 +150,7 @@ export function HiringMatrix() {
   const [rejectionReason, setRejectionReason] = useState('');
   
   const [formData, setFormData] = useState<HiringMatrixFormData>({
+    candidateId: '',
     employeeName: '',
     jobTitle: '',
     startDate: '',
@@ -108,7 +158,7 @@ export function HiringMatrix() {
     contractEndDate: '',
     basicSalary: '',
     billableStatus: '',
-    workLocation: '30th Floor, Menara BHL, No. 51, Jalan Sultan Ahmad Shah, 10050 Georgetown, Penang, Malaysia',
+    workLocation: DEFAULT_WORK_LOCATION,
     workingTime: '',
     workdayPattern: '',
     candidateEmail: '',
@@ -120,14 +170,14 @@ export function HiringMatrix() {
     leaveManager: '',
     attendanceManager: '',
     payGroup: '',
-    parkingAllowance: '',
-    attendanceAwards: '',
-    shiftAllowance: '',
-    overtimePay: '',
-    annualLeave: '',
-    workPassRequired: '',
+    parkingAllowance: 'N/A',
+    attendanceAwards: 'N/A',
+    shiftAllowance: 'N/A',
+    overtimePay: 'N/A',
+    annualLeave: 'N/A',
+    workPassRequired: 'N/A',
     workPassType: '',
-    emailRequired: '',
+    emailRequired: 'N/A',
     emailNameCreation: '',
     departmentName: '',
     cccName: '',
@@ -136,6 +186,61 @@ export function HiringMatrix() {
     resumeSource: '',
   });
   const [activeSection, setActiveSection] = useState<FormSectionKey>('required');
+  const [viewOnly, setViewOnly] = useState(false);
+
+  useEffect(() => subscribeToHiringMatrices(
+    (records) => {
+      setMatrices(records.map(mapFirestoreHiringMatrix));
+    },
+    (error) => {
+      console.error(error);
+      toast.error('Unable to load hiring matrices from Firebase.');
+    }
+  ), []);
+
+  useEffect(() => {
+    let interviews: Array<{ candidateId?: string; candidateName?: string; position?: string; email?: string; phone?: string; interview_status?: string }> = [];
+    let candidates: Array<FirestoreCandidate & { id: string }> = [];
+
+    const updateAcceptedCandidates = () => {
+      const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+      setAcceptedCandidates(
+        interviews
+          .filter((interview) => interview.interview_status === 'accept' && interview.candidateId)
+          .map((interview) => {
+            const candidate = candidateById.get(interview.candidateId!);
+            return {
+              id: interview.candidateId!,
+              name: interview.candidateName ?? candidate?.name ?? '',
+              position: interview.position ?? '',
+              email: interview.email ?? candidate?.email ?? '',
+              phone: interview.phone ?? candidate?.phone ?? '',
+            };
+          })
+          .filter((candidate) => candidate.name)
+      );
+    };
+
+    const unsubscribeInterviews = subscribeToInterviews((records) => {
+      interviews = records;
+      updateAcceptedCandidates();
+    }, (error) => {
+      console.error(error);
+      toast.error('Unable to load accepted interview candidates.');
+    });
+    const unsubscribeCandidates = subscribeToCandidatesCollection((records) => {
+      candidates = records;
+      updateAcceptedCandidates();
+    }, (error) => {
+      console.error(error);
+      toast.error('Unable to load candidate contact details.');
+    });
+
+    return () => {
+      unsubscribeInterviews();
+      unsubscribeCandidates();
+    };
+  }, []);
 
   const formSections: { key: FormSectionKey; label: string }[] = [
     { key: 'required', label: 'Required Information' },
@@ -156,6 +261,7 @@ export function HiringMatrix() {
 
   const handleOpenFormDialog = () => {
     setFormData({
+      candidateId: '',
       employeeName: '',
       jobTitle: '',
       startDate: '',
@@ -163,7 +269,7 @@ export function HiringMatrix() {
       contractEndDate: '',
       basicSalary: '',
       billableStatus: '',
-      workLocation: '30th Floor, Menara BHL, No. 51, Jalan Sultan Ahmad Shah, 10050 Georgetown, Penang, Malaysia',
+      workLocation: DEFAULT_WORK_LOCATION,
       workingTime: '',
       workdayPattern: '',
       candidateEmail: '',
@@ -175,14 +281,14 @@ export function HiringMatrix() {
       leaveManager: '',
       attendanceManager: '',
       payGroup: '',
-      parkingAllowance: '',
-      attendanceAwards: '',
-      shiftAllowance: '',
-      overtimePay: '',
-      annualLeave: '',
-      workPassRequired: '',
+      parkingAllowance: 'N/A',
+      attendanceAwards: 'N/A',
+      shiftAllowance: 'N/A',
+      overtimePay: 'N/A',
+      annualLeave: 'N/A',
+      workPassRequired: 'N/A',
       workPassType: '',
-      emailRequired: '',
+      emailRequired: 'N/A',
       emailNameCreation: '',
       departmentName: '',
       cccName: '',
@@ -193,76 +299,162 @@ export function HiringMatrix() {
     setSelectedMatrix(null);
     setActiveSection('required');
     setPageMode('form');
+    setViewOnly(false);
   };
 
-  const handleSubmitForm = () => {
-    if (!formData.employeeName || !formData.jobTitle || !formData.startDate || !formData.employmentType) {
+  const populateFormFromMatrix = (matrix: HiringMatrixType) => {
+    let extraData: Partial<FirestoreHiringMatrix> = {};
+    try {
+      extraData = JSON.parse(matrix.recruiterRemark) as Partial<FirestoreHiringMatrix>;
+    } catch {
+      // ignore
+    }
+
+    setFormData({
+      candidateId: extraData.candidate_id ?? matrix.candidateId,
+      employeeName: extraData.employee_name ?? matrix.candidateName,
+      jobTitle: extraData.job_title ?? matrix.position,
+      startDate: extraData.start_date ?? matrix.interviewDate,
+      employmentType: extraData.employment_type ?? '',
+      contractEndDate: extraData.current_contract_end_date ?? '',
+      basicSalary: extraData.basic_salary_offered ?? matrix.salary,
+      billableStatus: extraData.billable_status ?? '',
+      workLocation: extraData.work_location ?? DEFAULT_WORK_LOCATION,
+      workingTime: extraData.working_time ?? '',
+      workdayPattern: extraData.workday_shift_pattern ?? '',
+      candidateEmail: extraData.candidate_personal_email ?? matrix.email,
+      candidateMobile: extraData.candidate_mobile_number ?? matrix.phone,
+      jobGrade: extraData.job_grade ?? '',
+      hireType: extraData.hire_type ?? '',
+      bgcRequired: extraData.bgc_required ?? '',
+      reportingManager: extraData.reporting_manager ?? '',
+      leaveManager: extraData.leave_manager ?? '',
+      attendanceManager: extraData.attendance_manager ?? '',
+      payGroup: extraData.pay_group ?? '',
+      parkingAllowance: extraData.parking_allowance ?? 'N/A',
+      attendanceAwards: extraData.attendance_awards ?? 'N/A',
+      shiftAllowance: extraData.shift_allowance ?? 'N/A',
+      overtimePay: extraData.overtime_pay ?? 'N/A',
+      annualLeave: extraData.annual_leave ?? 'N/A',
+      workPassRequired: extraData.apply_work_pass_required ?? 'N/A',
+      workPassType: extraData.pass_type ?? '',
+      emailRequired: extraData.email_required ?? 'N/A',
+      emailNameCreation: extraData.email_name_creation ?? '',
+      departmentName: extraData.department_name ?? '',
+      cccName: extraData.ccc_name ?? '',
+      cccNo: extraData.ccc_no ?? '',
+      pidNo: extraData.pid_no ?? '',
+      resumeSource: extraData.resume_source ?? '',
+    });
+  };
+
+  const handleSubmitForm = async () => {
+    const missingFields = [
+      !formData.employeeName.trim() && 'Name',
+      !formData.jobTitle.trim() && 'Job Title',
+      !formData.startDate.trim() && 'Start Date',
+      !formData.employmentType.trim() && 'Employment Type',
+    ].filter((field): field is string => Boolean(field));
+
+    if (missingFields.length > 0) {
       toast.error('Please fill in all required fields (Name, Job Title, Start Date, Employment Type)');
       return;
     }
 
-    const newMatrix: HiringMatrixType = {
-      id: `hm-${matrices.length + 1}`,
-      candidateId: `cand-${matrices.length + 1}`,
-      candidateName: formData.employeeName,
-      position: formData.jobTitle,
-      department: formData.departmentName,
-      phone: formData.candidateMobile,
-      email: formData.candidateEmail,
-      interviewDate: formData.startDate,
-      salary: formData.basicSalary,
-      hiringManagerRemark: `Employment Type: ${formData.employmentType}, Work Pass: ${formData.workPassRequired}${formData.workPassRequired === 'Yes' ? ` (${formData.workPassType})` : ''}, Email Required: ${formData.emailRequired}`,
-      recruiterRemark: JSON.stringify({
-        billable: formData.billableStatus,
-        workLocation: formData.workLocation,
-        workingTime: formData.workingTime,
-        workdayPattern: formData.workdayPattern,
-        jobGrade: formData.jobGrade,
-        hireType: formData.hireType,
-        bgcRequired: formData.bgcRequired,
-        reportingManager: formData.reportingManager,
-        leaveManager: formData.leaveManager,
-        attendanceManager: formData.attendanceManager,
-        payGroup: formData.payGroup,
-        parkingAllowance: formData.parkingAllowance,
-        attendanceAwards: formData.attendanceAwards,
-        shiftAllowance: formData.shiftAllowance,
-        overtimePay: formData.overtimePay,
-        annualLeave: formData.annualLeave,
-        cccName: formData.cccName,
-        cccNo: formData.cccNo,
-        pidNo: formData.pidNo,
-        resumeSource: formData.resumeSource,
-      }),
-      jobRequisition: '',
-      status: 'Pending',
-      requestedBy: user?.name || '',
-      requestedDate: new Date().toISOString().split('T')[0],
-    };
-
-    setMatrices([...matrices, newMatrix]);
-    setPageMode('list');
-    setSelectedMatrix(null);
-    toast.success('Hiring matrix created successfully');
+    try {
+      const salary = formatSalary(formData.basicSalary);
+      const selectedCandidate = acceptedCandidates.find(
+        (candidate) => candidate.id === formData.candidateId || candidate.name === formData.employeeName
+      );
+      const payload = {
+        candidate_id: formData.candidateId || selectedCandidate?.id || '',
+        employee_name: formData.employeeName,
+        job_title: formData.jobTitle,
+        start_date: formData.startDate,
+        employment_type: formData.employmentType,
+        current_contract_end_date: formData.contractEndDate || null,
+        billable_status: formData.billableStatus,
+        basic_salary_offered: salary ? `RM${salary}` : '',
+        hire_type: formData.hireType,
+        work_location: formData.workLocation || DEFAULT_WORK_LOCATION,
+        working_time: formData.workingTime,
+        workday_shift_pattern: formData.workdayPattern,
+        job_grade: formData.jobGrade || null,
+        candidate_personal_email: formData.candidateEmail,
+        candidate_mobile_number: formData.candidateMobile,
+        reporting_manager: formData.reportingManager,
+        leave_manager: formData.leaveManager,
+        attendance_manager: formData.attendanceManager,
+        bgc_required: formData.bgcRequired,
+        pay_group: formData.payGroup,
+        attendance_awards: formData.attendanceAwards || 'N/A',
+        overtime_pay: formData.overtimePay || 'N/A',
+        parking_allowance: formData.parkingAllowance || 'N/A',
+        shift_allowance: formData.shiftAllowance || 'N/A',
+        annual_leave: formData.annualLeave || 'N/A',
+        apply_work_pass_required: formData.workPassRequired || 'N/A',
+        pass_type: formData.workPassRequired === 'Yes' ? formData.workPassType : null,
+        email_required: formData.emailRequired || 'N/A',
+        email_name_creation: formData.emailRequired === 'Yes' && formData.emailNameCreation.trim()
+          ? `${formData.emailNameCreation.trim().toLowerCase().replace(/@centific\.com$/i, '')}@centific.com`
+          : null,
+        department_name: formData.departmentName,
+        ccc_no: formData.cccNo || null,
+        ccc_name: formData.cccName || null,
+        pid_no: formData.pidNo || null,
+        resume_source: formData.resumeSource || null,
+        created_by: user?.name || '',
+      };
+      if (selectedMatrix) {
+        await updateHiringMatrix(selectedMatrix.id, payload);
+      } else {
+        await createHiringMatrix(payload);
+      }
+      setPageMode('list');
+      setSelectedMatrix(null);
+      toast.success('Hiring matrix created successfully');
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to save hiring matrix.');
+    }
   };
 
   const handleOpenDetailsDialog = (matrix: HiringMatrixType) => {
+    // Department Manager should see a read-only multi-section form
+    if (user?.role === 'Department Manager') {
+      populateFormFromMatrix(matrix);
+      setSelectedMatrix(matrix);
+      setActiveSection('required');
+      setPageMode('form');
+      setViewOnly(true);
+      return;
+    }
+
     setSelectedMatrix(matrix);
     setDetailsDialogOpen(true);
   };
 
-  const handleApprove = (id: string) => {
-    setMatrices(prev =>
-      prev.map(req =>
-        req.id === id ? {
-          ...req,
-          status: 'Approved' as const,
-          approvedBy: user?.name,
-          approvedDate: new Date().toISOString().split('T')[0],
-        } : req
-      )
-    );
+  const handleApprove = async (id: string) => {
+    const matrix = matrices.find((item) => item.id === id);
+    if (!matrix?.candidateId) {
+      toast.error('Unable to approve hiring matrix because no candidate is linked.');
+      return;
+    }
+
+    try {
+      await updateHiringMatrixApproval(id, 'approved', user?.name || '');
+      await updateCandidateStatus(matrix.candidateId, 'Hired');
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to approve hiring matrix.');
+      return;
+    }
+    // If Department Manager approved from the form view, return to list and clear view state
     setDetailsDialogOpen(false);
+    setRejectionDialogOpen(false);
+    setPageMode('list');
+    setSelectedMatrix(null);
+    setViewOnly(false);
     toast.success('Hiring matrix approved');
   };
 
@@ -272,65 +464,102 @@ export function HiringMatrix() {
     setRejectionDialogOpen(true);
   };
 
-  const handleConfirmReject = () => {
+  const handleConfirmReject = async () => {
     if (!selectedMatrix) return;
-    
-    setMatrices(prev =>
-      prev.map(req =>
-        req.id === selectedMatrix.id ? { 
-          ...req, 
-          status: 'Rejected' as const,
-          rejectionReason: rejectionReason 
-        } : req
-      )
-    );
+    try {
+      await updateHiringMatrixApproval(selectedMatrix.id, 'rejected', user?.name || '', rejectionReason);
+    } catch (error) {
+      console.error(error);
+      toast.error('Unable to reject hiring matrix.');
+      return;
+    }
+    // After rejection, return Department Manager to list and clear view state
     setRejectionDialogOpen(false);
     setDetailsDialogOpen(false);
+    setPageMode('list');
+    setSelectedMatrix(null);
+    setViewOnly(false);
     toast.error('Hiring matrix rejected');
   };
 
+  const parsedRecruiterRemark = selectedMatrix?.recruiterRemark
+    ? (() => {
+        try {
+          return JSON.parse(selectedMatrix.recruiterRemark || '{}');
+        } catch {
+          return {};
+        }
+      })()
+    : {};
+
+  const getHiringManagerField = (field: 'employmentType' | 'workPass' | 'workPassType' | 'emailRequired') => {
+    const hm = selectedMatrix?.hiringManagerRemark || '';
+    if (field === 'employmentType') {
+      return hm.split('Employment Type: ')[1]?.split(',')[0] || '';
+    }
+    if (field === 'workPass') {
+      return hm.includes('Work Pass: Yes') ? 'Yes' : hm.includes('Work Pass: No') ? 'No' : '';
+    }
+    if (field === 'workPassType') {
+      const m = hm.match(/Work Pass: .*?\((.*?)\)/);
+      return m?.[1] || '';
+    }
+    if (field === 'emailRequired') {
+      return hm.includes('Email Required: Yes') ? 'Yes' : hm.includes('Email Required: No') ? 'No' : '';
+    }
+    return '';
+  };
+
+  const ReadOnlyField = ({ label, value }: { label: string; value?: string }) => (
+    <div>
+      <Label className="text-muted-foreground text-xs">{label}</Label>
+      <p className="font-semibold">{value || '-'}</p>
+    </div>
+  );
+
   const handleEditRejected = (matrix: HiringMatrixType) => {
-    let extraData = {};
+    let extraData: Partial<FirestoreHiringMatrix> = {};
     try {
-      extraData = JSON.parse(matrix.recruiterRemark);
-    } catch (e) {
+      extraData = JSON.parse(matrix.recruiterRemark) as Partial<FirestoreHiringMatrix>;
+    } catch {
       // If not JSON, ignore
     }
-    
+
     setFormData({
-      employeeName: matrix.candidateName,
-      jobTitle: matrix.position,
-      startDate: matrix.interviewDate,
-      employmentType: matrix.hiringManagerRemark?.split('Employment Type: ')[1]?.split(',')[0] || '',
-      contractEndDate: '',
-      basicSalary: matrix.salary,
-      billableStatus: (extraData as any).billable || '',
-      workLocation: (extraData as any).workLocation || '30th Floor, Menara BHL, No. 51, Jalan Sultan Ahmad Shah, 10050 Georgetown, Penang, Malaysia',
-      workingTime: (extraData as any).workingTime || '',
-      workdayPattern: (extraData as any).workdayPattern || '',
-      candidateEmail: matrix.email,
-      candidateMobile: matrix.phone,
-      jobGrade: (extraData as any).jobGrade || '',
-      hireType: (extraData as any).hireType || '',
-      bgcRequired: (extraData as any).bgcRequired || '',
-      reportingManager: (extraData as any).reportingManager || '',
-      leaveManager: (extraData as any).leaveManager || '',
-      attendanceManager: (extraData as any).attendanceManager || '',
-      payGroup: (extraData as any).payGroup || '',
-      parkingAllowance: (extraData as any).parkingAllowance || '',
-      attendanceAwards: (extraData as any).attendanceAwards || '',
-      shiftAllowance: (extraData as any).shiftAllowance || '',
-      overtimePay: (extraData as any).overtimePay || '',
-      annualLeave: (extraData as any).annualLeave || '',
-      workPassRequired: matrix.hiringManagerRemark?.includes('Work Pass: Yes') ? 'Yes' : matrix.hiringManagerRemark?.includes('Work Pass: No') ? 'No' : 'NA',
-      workPassType: (extraData as any).workPassType || '',
-      emailRequired: matrix.hiringManagerRemark?.includes('Email Required: Yes') ? 'Yes' : matrix.hiringManagerRemark?.includes('Email Required: No') ? 'No' : '',
-      emailNameCreation: (extraData as any).emailNameCreation || '',
-      departmentName: matrix.department,
-      cccName: (extraData as any).cccName || '',
-      cccNo: (extraData as any).cccNo || '',
-      pidNo: (extraData as any).pidNo || '',
-      resumeSource: (extraData as any).resumeSource || '',
+      candidateId: extraData.candidate_id ?? matrix.candidateId,
+      employeeName: extraData.employee_name ?? matrix.candidateName,
+      jobTitle: extraData.job_title ?? matrix.position,
+      startDate: extraData.start_date ?? matrix.interviewDate,
+      employmentType: extraData.employment_type ?? '',
+      contractEndDate: extraData.current_contract_end_date ?? '',
+      basicSalary: extraData.basic_salary_offered ?? matrix.salary,
+      billableStatus: extraData.billable_status ?? '',
+      workLocation: extraData.work_location ?? DEFAULT_WORK_LOCATION,
+      workingTime: extraData.working_time ?? '',
+      workdayPattern: extraData.workday_shift_pattern ?? '',
+      candidateEmail: extraData.candidate_personal_email ?? matrix.email,
+      candidateMobile: extraData.candidate_mobile_number ?? matrix.phone,
+      jobGrade: extraData.job_grade ?? '',
+      hireType: extraData.hire_type ?? '',
+      bgcRequired: extraData.bgc_required ?? '',
+      reportingManager: extraData.reporting_manager ?? '',
+      leaveManager: extraData.leave_manager ?? '',
+      attendanceManager: extraData.attendance_manager ?? '',
+      payGroup: extraData.pay_group ?? '',
+      parkingAllowance: extraData.parking_allowance ?? 'N/A',
+      attendanceAwards: extraData.attendance_awards ?? 'N/A',
+      shiftAllowance: extraData.shift_allowance ?? 'N/A',
+      overtimePay: extraData.overtime_pay ?? 'N/A',
+      annualLeave: extraData.annual_leave ?? 'N/A',
+      workPassRequired: extraData.apply_work_pass_required ?? 'N/A',
+      workPassType: '',
+      emailRequired: extraData.email_required ?? 'N/A',
+      emailNameCreation: extraData.email_name_creation ?? '',
+      departmentName: extraData.department_name ?? matrix.department,
+      cccName: extraData.ccc_name ?? '',
+      cccNo: extraData.ccc_no ?? '',
+      pidNo: extraData.pid_no ?? '',
+      resumeSource: extraData.resume_source ?? '',
     });
     setSelectedMatrix(matrix);
     setActiveSection('required');
@@ -353,11 +582,17 @@ export function HiringMatrix() {
     }
   };
 
-  const MatrixTable = ({ data, showActions, showApprovalActions }: { 
+  const MatrixTable = ({ data, showActions, showApprovalActions, showReason }: {
     data: HiringMatrixType[], 
     showActions: boolean,
-    showApprovalActions: boolean
-  }) => (
+    showApprovalActions: boolean,
+    showReason?: boolean,
+  }) => {
+    const baseCols = 8;
+    const extraCols = (showActions || showApprovalActions ? 1 : 0) + (showReason ? 1 : 0);
+    const colSpan = baseCols + extraCols;
+
+    return (
     <div className="border rounded-lg overflow-x-auto">
       <Table>
         <TableHeader>
@@ -369,7 +604,8 @@ export function HiringMatrix() {
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Start Date</TableHead>
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Salary</TableHead>
             <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Submitted By</TableHead>
-            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Date</TableHead>
+            <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Submit Date</TableHead>
+            {showReason && <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Reason</TableHead>}
             {(showActions || showApprovalActions) && <TableHead className="text-blue-700 dark:text-blue-300 font-bold">Actions</TableHead>}
           </TableRow>
         </TableHeader>
@@ -385,6 +621,12 @@ export function HiringMatrix() {
                 <TableCell>{matrix.salary}</TableCell>
                 <TableCell>{matrix.requestedBy}</TableCell>
                 <TableCell>{matrix.requestedDate}</TableCell>
+                {showReason && (
+                  <TableCell>
+                    <div className="max-w-xs truncate">{matrix.rejectionReason || '-'}</div>
+                  </TableCell>
+                )}
+
                 {(showActions || showApprovalActions) && (
                   <TableCell>
                     <div className="flex gap-2">
@@ -419,7 +661,7 @@ export function HiringMatrix() {
             ))
           ) : (
             <TableRow>
-              <TableCell colSpan={(showActions || showApprovalActions) ? 9 : 8} className="text-center py-8">
+              <TableCell colSpan={colSpan} className="text-center py-8">
                 <p className="text-muted-foreground">No hiring matrices found</p>
               </TableCell>
             </TableRow>
@@ -427,12 +669,13 @@ export function HiringMatrix() {
         </TableBody>
       </Table>
     </div>
-  );
+    );
+  };
 
   if (!hasPermission('Hiring Matrix Approval', 'read')) {
     return (
       <div className="flex items-center justify-center h-full">
-        <p className="text-muted-foreground">You don't have permission to access this feature.</p>
+        <p className="text-muted-foreground">You don&apos;t have permission to access this feature.</p>
       </div>
     );
   }
@@ -480,7 +723,7 @@ export function HiringMatrix() {
                 <div className="rounded-2xl border bg-background p-6 shadow-sm">
                   <div className="mb-6 border-b pb-4">
                     <h2 className="text-2xl font-semibold">
-                      {selectedMatrix ? 'Edit Hiring Matrix' : 'Create Hiring Matrix'}
+                      {viewOnly ? 'Hiring Matrix' : (selectedMatrix ? 'Edit Hiring Matrix' : 'Create Hiring Matrix')}
                     </h2>
                   </div>
 
@@ -491,20 +734,47 @@ export function HiringMatrix() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="employeeName">Employee Name (as per NRIC) *</Label>
-                          <Input id="employeeName" value={formData.employeeName} onChange={(e) => setFormData({ ...formData, employeeName: e.target.value })} />
+                          <Select
+                            value={formData.candidateId}
+                            onValueChange={(value) => {
+                              const candidate = acceptedCandidates.find((item) => item.id === value);
+                              if (!candidate) return;
+                              setFormData({
+                                ...formData,
+                                candidateId: candidate.id,
+                                employeeName: candidate.name,
+                                jobTitle: candidate.position,
+                                candidateEmail: candidate.email,
+                                candidateMobile: candidate.phone,
+                              });
+                            }}
+                          >
+                            <SelectTrigger id="employeeName" disabled={viewOnly}><SelectValue placeholder="Select an accepted candidate" /></SelectTrigger>
+                            <SelectContent>
+                              {acceptedCandidates.map((candidate) => (
+                                <SelectItem key={candidate.id} value={candidate.id}>{candidate.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="jobTitle">Job Title *</Label>
-                          <Input id="jobTitle" value={formData.jobTitle} onChange={(e) => setFormData({ ...formData, jobTitle: e.target.value })} />
+                          <Input
+                            id="jobTitle"
+                            value={formData.jobTitle}
+                            onChange={(e) => setFormData({ ...formData, jobTitle: e.target.value })}
+                            readOnly={viewOnly}
+                            disabled={viewOnly}
+                          />
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="startDate">Start Date *</Label>
-                          <Input id="startDate" type="date" value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} />
+                          <Input id="startDate" type="date" value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} readOnly={viewOnly} disabled={viewOnly} />
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="employmentType">Employment Type *</Label>
                           <Select value={formData.employmentType} onValueChange={(value) => setFormData({ ...formData, employmentType: value })}>
-                            <SelectTrigger id="employmentType"><SelectValue placeholder="Select employment type" /></SelectTrigger>
+                            <SelectTrigger id="employmentType" disabled={viewOnly}><SelectValue placeholder="Select employment type" /></SelectTrigger>
                             <SelectContent>
                               <SelectItem value="Full Time">Full Time</SelectItem>
                               <SelectItem value="Part Time">Part Time</SelectItem>
@@ -521,10 +791,10 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Employment Details</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="contractEndDate">Current Contract End Date (If applicable)</Label><Input id="contractEndDate" type="date" value={formData.contractEndDate} onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="basicSalary">Basic Salary Offered</Label><Input id="basicSalary" value={formData.basicSalary} onChange={(e) => setFormData({ ...formData, basicSalary: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="billableStatus">Billable / Non-Billable</Label><Select value={formData.billableStatus} onValueChange={(value) => setFormData({ ...formData, billableStatus: value })}><SelectTrigger id="billableStatus"><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent><SelectItem value="Billable">Billable</SelectItem><SelectItem value="Non-Billable">Non-Billable</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="hireType">New Hire / Internal transfer / Conversion</Label><Select value={formData.hireType} onValueChange={(value) => setFormData({ ...formData, hireType: value })}><SelectTrigger id="hireType"><SelectValue placeholder="Select hire type" /></SelectTrigger><SelectContent><SelectItem value="New Hire">New Hire</SelectItem><SelectItem value="Internal transfer">Internal transfer</SelectItem><SelectItem value="Conversion">Conversion</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="contractEndDate">Current Contract End Date (If applicable)</Label><Input id="contractEndDate" type="date" value={formData.contractEndDate} onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="basicSalary">Basic Salary Offered</Label><Input id="basicSalary" placeholder="RM 0.00" value={formData.basicSalary} onChange={(e) => setFormData({ ...formData, basicSalary: e.target.value })} onBlur={(e) => setFormData({ ...formData, basicSalary: formatSalary(e.target.value) })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="billableStatus">Billable / Non-Billable</Label><Select value={formData.billableStatus} onValueChange={(value) => setFormData({ ...formData, billableStatus: value })}><SelectTrigger id="billableStatus" disabled={viewOnly}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent><SelectItem value="Billable">Billable</SelectItem><SelectItem value="Non-Billable">Non-Billable</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="hireType">New Hire / Internal transfer / Conversion</Label><Select value={formData.hireType} onValueChange={(value) => setFormData({ ...formData, hireType: value })}><SelectTrigger id="hireType" disabled={viewOnly}><SelectValue placeholder="Select hire type" /></SelectTrigger><SelectContent><SelectItem value="New Hire">New Hire</SelectItem><SelectItem value="Internal transfer">Internal transfer</SelectItem><SelectItem value="Conversion">Conversion</SelectItem></SelectContent></Select></div>
                       </div>
                     </section>
                     )}
@@ -533,10 +803,10 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Work Details</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2 md:col-span-2"><Label htmlFor="workLocation">Work location (Full address)</Label><Input id="workLocation" value={formData.workLocation} onChange={(e) => setFormData({ ...formData, workLocation: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="workingTime">Working Time</Label><Select value={formData.workingTime} onValueChange={(value) => setFormData({ ...formData, workingTime: value })}><SelectTrigger id="workingTime"><SelectValue placeholder="Select working time" /></SelectTrigger><SelectContent><SelectItem value="Regular">Regular</SelectItem><SelectItem value="Shift">Shift</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="workdayPattern">Workday / Shift Pattern</Label><Select value={formData.workdayPattern} onValueChange={(value) => setFormData({ ...formData, workdayPattern: value })}><SelectTrigger id="workdayPattern"><SelectValue placeholder="Select workday pattern" /></SelectTrigger><SelectContent><SelectItem value="Mon-Fri">Mon-Fri</SelectItem><SelectItem value="Thu-Sun">Thu-Sun</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="jobGrade">Job Grade</Label><Input id="jobGrade" value={formData.jobGrade} onChange={(e) => setFormData({ ...formData, jobGrade: e.target.value })} /></div>
+                        <div className="space-y-2 md:col-span-2"><Label htmlFor="workLocation">Work location (Full address)</Label><Input id="workLocation" value={formData.workLocation} onChange={(e) => setFormData({ ...formData, workLocation: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="workingTime">Working Time</Label><Select value={formData.workingTime} onValueChange={(value) => setFormData({ ...formData, workingTime: value })}><SelectTrigger id="workingTime" disabled={viewOnly}><SelectValue placeholder="Select working time" /></SelectTrigger><SelectContent><SelectItem value="Regular">Regular</SelectItem><SelectItem value="Shift">Shift</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="workdayPattern">Workday / Shift Pattern</Label><Select value={formData.workdayPattern} onValueChange={(value) => setFormData({ ...formData, workdayPattern: value })}><SelectTrigger id="workdayPattern" disabled={viewOnly}><SelectValue placeholder="Select workday pattern" /></SelectTrigger><SelectContent><SelectItem value="Mon-Fri">Mon-Fri</SelectItem><SelectItem value="Thu-Sun">Thu-Sun</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="jobGrade">Job Grade</Label><Input id="jobGrade" value={formData.jobGrade} onChange={(e) => setFormData({ ...formData, jobGrade: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
                       </div>
                     </section>
                     )}
@@ -545,8 +815,8 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Contact Information</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="candidateEmail">Candidates Personal Email ID</Label><Input id="candidateEmail" type="email" value={formData.candidateEmail} onChange={(e) => setFormData({ ...formData, candidateEmail: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="candidateMobile">Candidates Mobile number</Label><Input id="candidateMobile" value={formData.candidateMobile} onChange={(e) => setFormData({ ...formData, candidateMobile: e.target.value })} /></div>
+                        <div className="space-y-2"><Label htmlFor="candidateEmail">Candidates Personal Email ID</Label><Input id="candidateEmail" type="email" value={formData.candidateEmail} onChange={(e) => setFormData({ ...formData, candidateEmail: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="candidateMobile">Candidates Mobile number</Label><Input id="candidateMobile" value={formData.candidateMobile} onChange={(e) => setFormData({ ...formData, candidateMobile: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
                       </div>
                     </section>
                     )}
@@ -555,10 +825,10 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Management & Approvals</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="reportingManager">Reporting Manager / Supervisor</Label><Input id="reportingManager" value={formData.reportingManager} onChange={(e) => setFormData({ ...formData, reportingManager: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="leaveManager">Leave Manager for Ignite</Label><Input id="leaveManager" value={formData.leaveManager} onChange={(e) => setFormData({ ...formData, leaveManager: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="attendanceManager">Attendance Manager for Ignite</Label><Input id="attendanceManager" value={formData.attendanceManager} onChange={(e) => setFormData({ ...formData, attendanceManager: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="bgcRequired">BGC Required</Label><Select value={formData.bgcRequired} onValueChange={(value) => setFormData({ ...formData, bgcRequired: value })}><SelectTrigger id="bgcRequired"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="reportingManager">Reporting Manager / Supervisor</Label><Input id="reportingManager" value={formData.reportingManager} onChange={(e) => setFormData({ ...formData, reportingManager: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="leaveManager">Leave Manager for Ignite</Label><Input id="leaveManager" value={formData.leaveManager} onChange={(e) => setFormData({ ...formData, leaveManager: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="attendanceManager">Attendance Manager for Ignite</Label><Input id="attendanceManager" value={formData.attendanceManager} onChange={(e) => setFormData({ ...formData, attendanceManager: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="bgcRequired">BGC Required</Label><Select value={formData.bgcRequired} onValueChange={(value) => setFormData({ ...formData, bgcRequired: value })}><SelectTrigger id="bgcRequired" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem></SelectContent></Select></div>
                       </div>
                     </section>
                     )}
@@ -567,12 +837,12 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Compensation & Benefits</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="payGroup">Pay Group (7th / 25th)</Label><Input id="payGroup" value={formData.payGroup} onChange={(e) => setFormData({ ...formData, payGroup: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="parkingAllowance">Parking Allowance (With Conditions)</Label><Select value={formData.parkingAllowance} onValueChange={(value) => setFormData({ ...formData, parkingAllowance: value })}><SelectTrigger id="parkingAllowance"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="NA">NA</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="attendanceAwards">Attendance Awards</Label><Select value={formData.attendanceAwards} onValueChange={(value) => setFormData({ ...formData, attendanceAwards: value })}><SelectTrigger id="attendanceAwards"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="NA">NA</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="shiftAllowance">Shift Allowance</Label><Select value={formData.shiftAllowance} onValueChange={(value) => setFormData({ ...formData, shiftAllowance: value })}><SelectTrigger id="shiftAllowance"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="NA">NA</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="overtimePay">Overtime Pay</Label><Select value={formData.overtimePay} onValueChange={(value) => setFormData({ ...formData, overtimePay: value })}><SelectTrigger id="overtimePay"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="NA">NA</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="annualLeave">Annual leave / Year</Label><Select value={formData.annualLeave} onValueChange={(value) => setFormData({ ...formData, annualLeave: value })}><SelectTrigger id="annualLeave"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="NA">NA</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="payGroup">Pay Group (7th / 25th)</Label><Input id="payGroup" value={formData.payGroup} onChange={(e) => setFormData({ ...formData, payGroup: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="parkingAllowance">Parking Allowance (With Conditions)</Label><Select value={formData.parkingAllowance} onValueChange={(value) => setFormData({ ...formData, parkingAllowance: value })}><SelectTrigger id="parkingAllowance" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="attendanceAwards">Attendance Awards</Label><Select value={formData.attendanceAwards} onValueChange={(value) => setFormData({ ...formData, attendanceAwards: value })}><SelectTrigger id="attendanceAwards" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="shiftAllowance">Shift Allowance</Label><Select value={formData.shiftAllowance} onValueChange={(value) => setFormData({ ...formData, shiftAllowance: value })}><SelectTrigger id="shiftAllowance" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="overtimePay">Overtime Pay</Label><Select value={formData.overtimePay} onValueChange={(value) => setFormData({ ...formData, overtimePay: value })}><SelectTrigger id="overtimePay" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="annualLeave">Annual leave / Year</Label><Select value={formData.annualLeave} onValueChange={(value) => setFormData({ ...formData, annualLeave: value })}><SelectTrigger id="annualLeave" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
                       </div>
                     </section>
                     )}
@@ -581,12 +851,12 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Work Pass & Email</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="workPassRequired">Apply Work Pass Required</Label><Select value={formData.workPassRequired} onValueChange={(value) => setFormData({ ...formData, workPassRequired: value, workPassType: value === 'Yes' ? formData.workPassType : '' })}><SelectTrigger id="workPassRequired"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="NA">NA</SelectItem></SelectContent></Select></div>
+                        <div className="space-y-2"><Label htmlFor="workPassRequired">Apply Work Pass Required</Label><Select value={formData.workPassRequired} onValueChange={(value) => setFormData({ ...formData, workPassRequired: value, workPassType: value === 'Yes' ? formData.workPassType : '' })}><SelectTrigger id="workPassRequired" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
                         {formData.workPassRequired === 'Yes' && (
-                          <div className="space-y-2"><Label htmlFor="workPassType">Pass Type (WP / SP / EP / LOC)</Label><Input id="workPassType" value={formData.workPassType} onChange={(e) => setFormData({ ...formData, workPassType: e.target.value })} /></div>
+                          <div className="space-y-2"><Label htmlFor="workPassType">Pass Type (WP / SP / EP / LOC)</Label><Input id="workPassType" value={formData.workPassType} onChange={(e) => setFormData({ ...formData, workPassType: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
                         )}
-                        <div className="space-y-2"><Label htmlFor="emailRequired">Email Required</Label><Select value={formData.emailRequired} onValueChange={(value) => setFormData({ ...formData, emailRequired: value })}><SelectTrigger id="emailRequired"><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem></SelectContent></Select></div>
-                        <div className="space-y-2"><Label htmlFor="emailNameCreation">Email Name Creation</Label><Input id="emailNameCreation" value={formData.emailNameCreation} onChange={(e) => setFormData({ ...formData, emailNameCreation: e.target.value })} /></div>
+                        <div className="space-y-2"><Label htmlFor="emailRequired">Email Required</Label><Select value={formData.emailRequired} onValueChange={(value) => setFormData({ ...formData, emailRequired: value, emailNameCreation: value === 'Yes' ? formData.emailNameCreation : '' })}><SelectTrigger id="emailRequired" disabled={viewOnly}><SelectValue placeholder="Select option" /></SelectTrigger><SelectContent><SelectItem value="Yes">Yes</SelectItem><SelectItem value="No">No</SelectItem><SelectItem value="N/A">N/A</SelectItem></SelectContent></Select></div>
+                        {formData.emailRequired === 'Yes' && <div className="space-y-2"><Label htmlFor="emailNameCreation">Email Name Creation</Label><Input id="emailNameCreation" value={formData.emailNameCreation} onChange={(e) => setFormData({ ...formData, emailNameCreation: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>}
                       </div>
                     </section>
                     )}
@@ -595,21 +865,39 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Organizational Details</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="departmentName">Department Name</Label><Input id="departmentName" value={formData.departmentName} onChange={(e) => setFormData({ ...formData, departmentName: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="cccName">CCC Name</Label><Input id="cccName" value={formData.cccName} onChange={(e) => setFormData({ ...formData, cccName: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="cccNo">CCC No.</Label><Input id="cccNo" value={formData.cccNo} onChange={(e) => setFormData({ ...formData, cccNo: e.target.value })} /></div>
-                        <div className="space-y-2"><Label htmlFor="pidNo">PID No.</Label><Input id="pidNo" value={formData.pidNo} onChange={(e) => setFormData({ ...formData, pidNo: e.target.value })} /></div>
-                        <div className="space-y-2 md:col-span-2"><Label htmlFor="resumeSource">Resume Source</Label><Input id="resumeSource" placeholder="myCareerFuture, Job Portal, Agency, Referral" value={formData.resumeSource} onChange={(e) => setFormData({ ...formData, resumeSource: e.target.value })} /></div>
+                        <div className="space-y-2"><Label htmlFor="departmentName">Department Name</Label><Input id="departmentName" value={formData.departmentName} onChange={(e) => setFormData({ ...formData, departmentName: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="cccName">CCC Name</Label><Input id="cccName" value={formData.cccName} onChange={(e) => setFormData({ ...formData, cccName: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="cccNo">CCC No.</Label><Input id="cccNo" value={formData.cccNo} onChange={(e) => setFormData({ ...formData, cccNo: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="pidNo">PID No.</Label><Input id="pidNo" value={formData.pidNo} onChange={(e) => setFormData({ ...formData, pidNo: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2 md:col-span-2"><Label htmlFor="resumeSource">Resume Source</Label><Input id="resumeSource" placeholder="myCareerFuture, Job Portal, Agency, Referral" value={formData.resumeSource} onChange={(e) => setFormData({ ...formData, resumeSource: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
                       </div>
                     </section>
                     )}
                   </div>
 
                   <div className="mt-8 flex items-center justify-end gap-3 border-t pt-4">
-                    <Button variant="outline" onClick={handleCancelForm}>Cancel</Button>
-                    <Button onClick={isLastSection ? handleSubmitForm : handleNextSection}>
-                      {isLastSection ? `${selectedMatrix ? 'Update' : 'Create'} Hiring Matrix` : 'Next'}
-                    </Button>
+                    {viewOnly ? (
+                      <>
+                        <Button variant="outline" onClick={() => { setPageMode('list'); setSelectedMatrix(null); setViewOnly(false); }}>
+                          Back
+                        </Button>
+                        <Button variant="destructive" onClick={() => handleRejectClick(selectedMatrix!)}>
+                          <XCircle className="h-4 w-4 mr-1" />
+                          Reject
+                        </Button>
+                        <Button onClick={() => handleApprove(selectedMatrix!.id)}>
+                          <CheckCircle className="h-4 w-4 mr-1" />
+                          Approve
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button variant="outline" onClick={handleCancelForm}>Cancel</Button>
+                        <Button onClick={isLastSection ? handleSubmitForm : handleNextSection}>
+                          {isLastSection ? `${selectedMatrix ? 'Update' : 'Create'} Hiring Matrix` : 'Next'}
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -696,6 +984,7 @@ export function HiringMatrix() {
                 data={rejectedMatrices} 
                 showActions={canCreateMatrix}
                 showApprovalActions={false}
+                showReason={true}
               />
             </TabsContent>
           </Tabs>
@@ -751,7 +1040,7 @@ export function HiringMatrix() {
                 <div className="space-y-2">
                   <Label htmlFor="employmentType">Employment Type *</Label>
                   <Select value={formData.employmentType} onValueChange={(value) => setFormData({ ...formData, employmentType: value })}>
-                    <SelectTrigger id="employmentType">
+                    <SelectTrigger id="employmentType" disabled={viewOnly}>
                       <SelectValue placeholder="Select employment type" />
                     </SelectTrigger>
                     <SelectContent>
@@ -776,21 +1065,26 @@ export function HiringMatrix() {
                     type="date"
                     value={formData.contractEndDate}
                     onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="basicSalary">Basic Salary Offered</Label>
                   <Input
                     id="basicSalary"
-                    placeholder="Enter salary amount"
+                    placeholder="RM 0.00"
                     value={formData.basicSalary}
                     onChange={(e) => setFormData({ ...formData, basicSalary: e.target.value })}
+                    onBlur={(e) => setFormData({ ...formData, basicSalary: formatSalary(e.target.value) })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="billableStatus">Billable / Non-Billable</Label>
                   <Select value={formData.billableStatus} onValueChange={(value) => setFormData({ ...formData, billableStatus: value })}>
-                    <SelectTrigger id="billableStatus">
+                    <SelectTrigger id="billableStatus" disabled={viewOnly}>
                       <SelectValue placeholder="Select status" />
                     </SelectTrigger>
                     <SelectContent>
@@ -802,7 +1096,7 @@ export function HiringMatrix() {
                 <div className="space-y-2">
                   <Label htmlFor="hireType">New Hire / Internal transfer / Conversion</Label>
                   <Select value={formData.hireType} onValueChange={(value) => setFormData({ ...formData, hireType: value })}>
-                    <SelectTrigger id="hireType">
+                    <SelectTrigger id="hireType" disabled={viewOnly}>
                       <SelectValue placeholder="Select hire type" />
                     </SelectTrigger>
                     <SelectContent>
@@ -826,12 +1120,14 @@ export function HiringMatrix() {
                     placeholder="Enter work location"
                     value={formData.workLocation}
                     onChange={(e) => setFormData({ ...formData, workLocation: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="workingTime">Working Time</Label>
                   <Select value={formData.workingTime} onValueChange={(value) => setFormData({ ...formData, workingTime: value })}>
-                    <SelectTrigger id="workingTime">
+                    <SelectTrigger id="workingTime" disabled={viewOnly}>
                       <SelectValue placeholder="Select working time" />
                     </SelectTrigger>
                     <SelectContent>
@@ -843,7 +1139,7 @@ export function HiringMatrix() {
                 <div className="space-y-2">
                   <Label htmlFor="workdayPattern">Workday / Shift Pattern</Label>
                   <Select value={formData.workdayPattern} onValueChange={(value) => setFormData({ ...formData, workdayPattern: value })}>
-                    <SelectTrigger id="workdayPattern">
+                    <SelectTrigger id="workdayPattern" disabled={viewOnly}>
                       <SelectValue placeholder="Select workday pattern" />
                     </SelectTrigger>
                     <SelectContent>
@@ -859,6 +1155,8 @@ export function HiringMatrix() {
                     placeholder="Enter job grade"
                     value={formData.jobGrade}
                     onChange={(e) => setFormData({ ...formData, jobGrade: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
               </div>
@@ -876,6 +1174,8 @@ export function HiringMatrix() {
                     placeholder="Enter email"
                     value={formData.candidateEmail}
                     onChange={(e) => setFormData({ ...formData, candidateEmail: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -885,6 +1185,8 @@ export function HiringMatrix() {
                     placeholder="Enter mobile number"
                     value={formData.candidateMobile}
                     onChange={(e) => setFormData({ ...formData, candidateMobile: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
               </div>
@@ -901,6 +1203,8 @@ export function HiringMatrix() {
                     placeholder="Enter reporting manager name"
                     value={formData.reportingManager}
                     onChange={(e) => setFormData({ ...formData, reportingManager: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -910,6 +1214,8 @@ export function HiringMatrix() {
                     placeholder="Enter leave manager name"
                     value={formData.leaveManager}
                     onChange={(e) => setFormData({ ...formData, leaveManager: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -919,17 +1225,20 @@ export function HiringMatrix() {
                     placeholder="Enter attendance manager name"
                     value={formData.attendanceManager}
                     onChange={(e) => setFormData({ ...formData, attendanceManager: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="bgcRequired">BGC Required</Label>
                   <Select value={formData.bgcRequired} onValueChange={(value) => setFormData({ ...formData, bgcRequired: value })}>
-                    <SelectTrigger id="bgcRequired">
+                    <SelectTrigger id="bgcRequired" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -940,77 +1249,79 @@ export function HiringMatrix() {
             <div className="border-b pb-4">
               <h3 className="font-semibold text-sm mb-4">Compensation & Benefits</h3>
               <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+                {formData.emailRequired === 'Yes' && <div className="space-y-2">
                   <Label htmlFor="payGroup">Pay Group (7th / 25th)</Label>
                   <Input
                     id="payGroup"
                     placeholder="Enter pay group"
                     value={formData.payGroup}
                     onChange={(e) => setFormData({ ...formData, payGroup: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
-                </div>
+                </div>}
                 <div className="space-y-2">
                   <Label htmlFor="parkingAllowance">Parking Allowance (With Conditions)</Label>
                   <Select value={formData.parkingAllowance} onValueChange={(value) => setFormData({ ...formData, parkingAllowance: value })}>
-                    <SelectTrigger id="parkingAllowance">
+                    <SelectTrigger id="parkingAllowance" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
-                      <SelectItem value="NA">NA</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="attendanceAwards">Attendance Awards</Label>
                   <Select value={formData.attendanceAwards} onValueChange={(value) => setFormData({ ...formData, attendanceAwards: value })}>
-                    <SelectTrigger id="attendanceAwards">
+                    <SelectTrigger id="attendanceAwards" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
-                      <SelectItem value="NA">NA</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="shiftAllowance">Shift Allowance</Label>
                   <Select value={formData.shiftAllowance} onValueChange={(value) => setFormData({ ...formData, shiftAllowance: value })}>
-                    <SelectTrigger id="shiftAllowance">
+                    <SelectTrigger id="shiftAllowance" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
-                      <SelectItem value="NA">NA</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="overtimePay">Overtime Pay</Label>
                   <Select value={formData.overtimePay} onValueChange={(value) => setFormData({ ...formData, overtimePay: value })}>
-                    <SelectTrigger id="overtimePay">
+                    <SelectTrigger id="overtimePay" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
-                      <SelectItem value="NA">NA</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="annualLeave">Annual leave / Year</Label>
                   <Select value={formData.annualLeave} onValueChange={(value) => setFormData({ ...formData, annualLeave: value })}>
-                    <SelectTrigger id="annualLeave">
+                    <SelectTrigger id="annualLeave" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
-                      <SelectItem value="NA">NA</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1024,13 +1335,13 @@ export function HiringMatrix() {
                 <div className="space-y-2">
                   <Label htmlFor="workPassRequired">Apply Work Pass Required</Label>
                   <Select value={formData.workPassRequired} onValueChange={(value) => setFormData({ ...formData, workPassRequired: value })}>
-                    <SelectTrigger id="workPassRequired">
+                    <SelectTrigger id="workPassRequired" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
-                      <SelectItem value="NA">NA</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1042,30 +1353,35 @@ export function HiringMatrix() {
                       placeholder="e.g., WP, SP, EP, LOC"
                       value={formData.workPassType}
                       onChange={(e) => setFormData({ ...formData, workPassType: e.target.value })}
+                      readOnly={viewOnly}
+                      disabled={viewOnly}
                     />
                   </div>
                 )}
                 <div className="space-y-2">
                   <Label htmlFor="emailRequired">Email Required</Label>
-                  <Select value={formData.emailRequired} onValueChange={(value) => setFormData({ ...formData, emailRequired: value })}>
-                    <SelectTrigger id="emailRequired">
+                  <Select value={formData.emailRequired} onValueChange={(value) => setFormData({ ...formData, emailRequired: value, emailNameCreation: value === 'Yes' ? formData.emailNameCreation : '' })}>
+                    <SelectTrigger id="emailRequired" disabled={viewOnly}>
                       <SelectValue placeholder="Select option" />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Yes">Yes</SelectItem>
                       <SelectItem value="No">No</SelectItem>
+                      <SelectItem value="N/A">N/A</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-2">
+                {formData.emailRequired === 'Yes' && <div className="space-y-2">
                   <Label htmlFor="emailNameCreation">Email Name Creation</Label>
                   <Input
                     id="emailNameCreation"
                     placeholder="Enter email name"
                     value={formData.emailNameCreation}
                     onChange={(e) => setFormData({ ...formData, emailNameCreation: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
-                </div>
+                </div>}
               </div>
             </div>
 
@@ -1080,6 +1396,8 @@ export function HiringMatrix() {
                     placeholder="Enter department name"
                     value={formData.departmentName}
                     onChange={(e) => setFormData({ ...formData, departmentName: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -1089,6 +1407,8 @@ export function HiringMatrix() {
                     placeholder="Enter CCC name"
                     value={formData.cccName}
                     onChange={(e) => setFormData({ ...formData, cccName: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -1098,6 +1418,8 @@ export function HiringMatrix() {
                     placeholder="Enter CCC number"
                     value={formData.cccNo}
                     onChange={(e) => setFormData({ ...formData, cccNo: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2">
@@ -1107,6 +1429,8 @@ export function HiringMatrix() {
                     placeholder="Enter PID number"
                     value={formData.pidNo}
                     onChange={(e) => setFormData({ ...formData, pidNo: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
                 <div className="space-y-2 col-span-2">
@@ -1116,6 +1440,8 @@ export function HiringMatrix() {
                     placeholder="e.g., myCareerFuture, Job Portal, Agency, Referral"
                     value={formData.resumeSource}
                     onChange={(e) => setFormData({ ...formData, resumeSource: e.target.value })}
+                    readOnly={viewOnly}
+                    disabled={viewOnly}
                   />
                 </div>
               </div>
@@ -1144,39 +1470,45 @@ export function HiringMatrix() {
           {selectedMatrix && (
             <div className="space-y-4 py-4">
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label className="text-muted-foreground text-xs">Employee Name</Label>
-                  <p className="font-semibold">{selectedMatrix.candidateName}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Job Title</Label>
-                  <p className="font-semibold">{selectedMatrix.position}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Start Date</Label>
-                  <p className="font-semibold">{selectedMatrix.interviewDate}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Department</Label>
-                  <p className="font-semibold">{selectedMatrix.department}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Basic Salary</Label>
-                  <p className="font-semibold">{selectedMatrix.salary}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Submitted By</Label>
-                  <p className="font-semibold">{selectedMatrix.requestedBy}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Submission Date</Label>
-                  <p className="font-semibold">{selectedMatrix.requestedDate}</p>
-                </div>
-                <div>
-                  <Label className="text-muted-foreground text-xs">Employment Details</Label>
-                  <p className="font-semibold text-sm">{selectedMatrix.hiringManagerRemark}</p>
-                </div>
+                <ReadOnlyField label="Employee Name" value={selectedMatrix.candidateName} />
+                <ReadOnlyField label="Job Title" value={selectedMatrix.position} />
+                <ReadOnlyField label="Start Date" value={selectedMatrix.interviewDate} />
+                <ReadOnlyField label="Department" value={selectedMatrix.department} />
+                <ReadOnlyField label="Basic Salary" value={selectedMatrix.salary} />
+                <ReadOnlyField label="Submitted By" value={selectedMatrix.requestedBy} />
+                <ReadOnlyField label="Submission Date" value={selectedMatrix.requestedDate} />
+                <ReadOnlyField label="Employment Details" value={selectedMatrix.hiringManagerRemark} />
               </div>
+
+              {Object.keys(parsedRecruiterRemark || {}).length > 0 && (
+                <div>
+                  <h4 className="font-semibold mt-4">Hiring Manager / Recruiter Details (Read Only)</h4>
+                  <div className="grid grid-cols-2 gap-4 mt-3">
+                    <ReadOnlyField label="Billable" value={(parsedRecruiterRemark as any).billable} />
+                    <ReadOnlyField label="Work Location" value={(parsedRecruiterRemark as any).workLocation} />
+                    <ReadOnlyField label="Working Time" value={(parsedRecruiterRemark as any).workingTime} />
+                    <ReadOnlyField label="Workday Pattern" value={(parsedRecruiterRemark as any).workdayPattern} />
+                    <ReadOnlyField label="Job Grade" value={(parsedRecruiterRemark as any).jobGrade} />
+                    <ReadOnlyField label="Hire Type" value={(parsedRecruiterRemark as any).hireType} />
+                    <ReadOnlyField label="BGC Required" value={(parsedRecruiterRemark as any).bgcRequired} />
+                    <ReadOnlyField label="Reporting Manager" value={(parsedRecruiterRemark as any).reportingManager} />
+                    <ReadOnlyField label="Leave Manager" value={(parsedRecruiterRemark as any).leaveManager} />
+                    <ReadOnlyField label="Attendance Manager" value={(parsedRecruiterRemark as any).attendanceManager} />
+                    <ReadOnlyField label="Pay Group" value={(parsedRecruiterRemark as any).payGroup} />
+                    <ReadOnlyField label="Parking Allowance" value={(parsedRecruiterRemark as any).parkingAllowance} />
+                    <ReadOnlyField label="Attendance Awards" value={(parsedRecruiterRemark as any).attendanceAwards} />
+                    <ReadOnlyField label="Shift Allowance" value={(parsedRecruiterRemark as any).shiftAllowance} />
+                    <ReadOnlyField label="Overtime Pay" value={(parsedRecruiterRemark as any).overtimePay} />
+                    <ReadOnlyField label="Annual Leave" value={(parsedRecruiterRemark as any).annualLeave} />
+                    <ReadOnlyField label="CCC Name" value={(parsedRecruiterRemark as any).cccName} />
+                    <ReadOnlyField label="CCC No" value={(parsedRecruiterRemark as any).cccNo} />
+                    <ReadOnlyField label="PID No" value={(parsedRecruiterRemark as any).pidNo} />
+                    <ReadOnlyField label="Resume Source" value={(parsedRecruiterRemark as any).resumeSource} />
+                    <ReadOnlyField label="Work Pass Type" value={(parsedRecruiterRemark as any).workPassType || getHiringManagerField('workPassType')} />
+                    <ReadOnlyField label="Email Name" value={(parsedRecruiterRemark as any).emailNameCreation} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <DialogFooter>

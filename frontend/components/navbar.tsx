@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Menu, Moon, Sun, LogOut, UserCircle, LayoutDashboard, FileText, Sparkles, Briefcase, Users, UserCheck, Calendar, ClipboardList, CheckSquare, UserCog, X } from 'lucide-react';
+import { Menu, Moon, Sun, LogOut, UserCircle, LayoutDashboard, FileText, Sparkles, Briefcase, UserCheck, Calendar, ClipboardList, CheckSquare, UserCog, X } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -25,28 +25,82 @@ const defaultNavItems: NavbarItem[] = [
   { title: 'Resume Parsing', href: '/resume-parsing', icon: FileText, feature: 'Resume Parsing' },
   { title: 'AI Matching', href: '/ai-matching', icon: Sparkles, feature: 'AI Matching' },
   { title: 'Job Positions', href: '/job-positions', icon: Briefcase, feature: 'Job Positions' },
-  { title: 'Talent Pool', href: '/talent-pool', icon: Users, feature: 'Searchable Talent Pool' },
   { title: 'Shortlisted Pool', href: '/shortlisted-pool', icon: UserCheck, feature: 'Shortlisted Pool' },
   { title: 'Interviews', href: '/interviews', icon: Calendar, feature: 'Interview Management' },
   { title: 'Interview Tracking', href: '/interview-tracking', icon: ClipboardList, feature: 'Interview Management' },
   { title: 'Candidate Profiles', href: '/candidate-profiles', icon: ClipboardList, feature: 'Candidate Profiles' },
   { title: 'Hiring Matrix', href: '/hiring-matrix', icon: CheckSquare, feature: 'Hiring Matrix Approval' },
   { title: 'User Management', href: '/users', icon: UserCog, feature: 'User Management' },
-  { title: 'Profile Management', href: '/profile', icon: UserCircle },
 ];
 
-function getInitials(name: string) {
+function getInitials(name?: string) {
+  if (!name) {
+    return 'C';
+  }
+
   return name
-    .split(' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
     .map((part) => part[0])
     .join('')
-    .toUpperCase();
+    .toUpperCase() || 'C';
+}
+
+type SidebarContentProps = {
+  navItems: NavbarItem[];
+  pathname: string;
+  user: { name?: string; role?: string } | null;
+  onClose: () => void;
+};
+
+function SidebarContent({ navItems, pathname, user, onClose }: SidebarContentProps) {
+  return (
+    <div className="flex h-full flex-col bg-card fixed w-72 border-r border-border">
+      <div className="flex h-16 items-center justify-between border-b border-border px-6">
+        <div className="flex items-center gap-3">
+          <img src="/images/centificlogo.png" alt="Centific" className="h-8 w-auto mix-blend-multiply dark:mix-blend-normal dark:brightness-0 dark:invert" />
+        </div>
+        <Button variant="ghost" size="icon" className="lg:hidden" onClick={onClose}>
+          <X className="h-5 w-5" />
+        </Button>
+      </div>
+
+      <ScrollArea className="flex-1">
+        <nav className="space-y-1 p-3">
+          {navItems.map((item) => {
+            const active = pathname === item.href;
+            return (
+              <Button key={item.href} asChild variant={active ? 'default' : 'ghost'} className="h-auto w-full justify-start px-3 py-3">
+                <Link href={item.href} onClick={onClose}>
+                  <item.icon className="mr-3 h-4 w-4" />
+                  <span>{item.title}</span>
+                </Link>
+              </Button>
+            );
+          })}
+        </nav>
+      </ScrollArea>
+
+      <div className="border-t border-border p-4">
+        <div className="flex items-center gap-3">
+          <Avatar className="h-10 w-10">
+            <AvatarFallback>{getInitials(user?.name)}</AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{user?.name ?? 'Guest User'}</p>
+            <p className="truncate text-xs text-muted-foreground">{user?.role ?? 'Role'}</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function Navbar({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, hasPermission, signOut, switchRole } = useAuth();
+  const { user, hasPermission, signOut } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [open, setOpen] = useState(false);
 
@@ -76,51 +130,10 @@ export function Navbar({ children }: { children: React.ReactNode }) {
     router.push('/');
   };
 
-  const SidebarContent = () => (
-    <div className="flex h-full flex-col bg-card fixed w-72 border-r border-border">
-      <div className="flex h-16 items-center justify-between border-b border-border px-6">
-        <div className="flex items-center gap-3">
-          <img src="/images/centificlogo.png" alt="Centific" className="h-8 w-auto mix-blend-multiply dark:mix-blend-normal dark:brightness-0 dark:invert" />
-        </div>
-        <Button variant="ghost" size="icon" className="lg:hidden" onClick={() => setOpen(false)}>
-          <X className="h-5 w-5" />
-        </Button>
-      </div>
-
-      <ScrollArea className="flex-1">
-        <nav className="space-y-1 p-3">
-          {navItems.map((item) => {
-            const active = pathname === item.href;
-            return (
-              <Button key={item.href} asChild variant={active ? 'default' : 'ghost'} className="h-auto w-full justify-start px-3 py-3">
-                <Link href={item.href} onClick={() => setOpen(false)}>
-                  <item.icon className="mr-3 h-4 w-4" />
-                  <span>{item.title}</span>
-                </Link>
-              </Button>
-            );
-          })}
-        </nav>
-      </ScrollArea>
-
-      <div className="border-t border-border p-4">
-        <div className="flex items-center gap-3">
-          <Avatar className="h-10 w-10">
-            <AvatarFallback>{user ? getInitials(user.name) : 'C'}</AvatarFallback>
-          </Avatar>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium">{user?.name ?? 'Guest User'}</p>
-            <p className="truncate text-xs text-muted-foreground">{user?.role ?? 'Role'}</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
   return (
     <div className="flex min-h-screen bg-background">
       <aside className="hidden w-72 shrink-0 border-r border-border lg:block">
-        <SidebarContent />
+        <SidebarContent navItems={navItems} pathname={pathname} user={user} onClose={() => setOpen(false)} />
       </aside>
 
       <Sheet open={open} onOpenChange={setOpen}>
@@ -130,7 +143,7 @@ export function Navbar({ children }: { children: React.ReactNode }) {
           </Button>
         </SheetTrigger>
         <SheetContent side="left" className="p-0">
-          <SidebarContent />
+          <SidebarContent navItems={navItems} pathname={pathname} user={user} onClose={() => setOpen(false)} />
         </SheetContent>
       </Sheet>
 
@@ -146,23 +159,6 @@ export function Navbar({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm">
-                  Switch Role (Demo)
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuLabel>Switch Role</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {(['Recruiter', 'Hiring Manager', 'Department Manager', 'Super Admin'] as const).map((role) => (
-                  <DropdownMenuItem key={role} onClick={() => switchRole(role)}>
-                    {role}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-
             <Button variant="ghost" size="icon" onClick={toggleTheme}>
               {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             </Button>
@@ -171,7 +167,7 @@ export function Navbar({ children }: { children: React.ReactNode }) {
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className="relative h-9 w-9 rounded-full">
                   <Avatar className="h-9 w-9">
-                    <AvatarFallback>{user ? getInitials(user.name) : 'C'}</AvatarFallback>
+                    <AvatarFallback>{getInitials(user?.name)}</AvatarFallback>
                   </Avatar>
                 </Button>
               </DropdownMenuTrigger>
