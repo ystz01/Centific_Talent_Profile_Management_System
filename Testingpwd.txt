@@ -1,0 +1,7 @@
+Recruiter: recruiter@centific.com
+pass: 123456
+
+Hiring Manager: hiringmanager@centific.com
+pass: 123456
+
+Super admin
