@@ -47,6 +47,7 @@ export function Interviews() {
   });
   const [decision, setDecision] = useState({
     decision: '' as 'accept' | '2nd Interview' | 'reject' | 'KIV' | '',
+    rejectReason: '',
   });
   const [remarkDialogOpen, setRemarkDialogOpen] = useState(false);
   const [remarkText, setRemarkText] = useState('');
@@ -59,12 +60,14 @@ export function Interviews() {
         setInterviews(records.map((record) => ({
           id: record.id,
           candidateId: record.candidateId ?? '',
+          jobId: record.jobId,
           candidateName: record.candidateName ?? '',
           position: record.position ?? '',
           interviewer: record.interviewer ?? '',
           interviewDateTime: record.interview_datetime ?? null,
           interviewType: record.interview_type ?? null,
           interviewStatus: record.interview_status ?? 'pending',
+          rejectReason: record.reject_reason ?? null,
           recruiterRemarks: record.recruiter_remark ?? [],
           hiringManagerRemarks: record.hiringmanager_remark ?? [],
           departmentManagerRemarks: record.departmentmanager_remark ?? [],
@@ -83,6 +86,19 @@ export function Interviews() {
   );
   const scheduledInterviews = interviews.filter(
     (interview) => Boolean(interview.interviewDateTime) && interview.interviewStatus === 'pending'
+  );
+  const selectedInterviewDateTime = newInterview.interviewDate && newInterview.interviewTime
+    ? `${newInterview.interviewDate}T${newInterview.interviewTime}`
+    : '';
+  const hasScheduleConflict = Boolean(
+    user?.role === 'Recruiter'
+    && selectedInterviewDateTime
+    && interviews.some((interview) =>
+      interview.id !== selectedInterview?.id
+      && interview.interviewer === user.name
+      && interview.interviewDateTime === selectedInterviewDateTime
+      && interview.interviewStatus === 'pending'
+    )
   );
   const completedInterviews = interviews.filter(
     (interview) => interview.interviewStatus !== 'pending'
@@ -104,6 +120,9 @@ export function Interviews() {
       toast.error('Interview date cannot be in the past');
       return;
     }
+    if (hasScheduleConflict) {
+      return;
+    }
 
     try {
       await scheduleInterview(newInterview.candidateId, {
@@ -112,6 +131,7 @@ export function Interviews() {
         interviewer: user?.name || '',
       });
       setDialogOpen(false);
+      setSelectedInterview(null);
       setNewInterview({ candidateId: '', interviewDate: '', interviewTime: '', interviewType: 'Technical Interview' });
       toast.success('Interview scheduled successfully');
     } catch (error) {
@@ -132,11 +152,15 @@ export function Interviews() {
     }
 
     if (!selectedInterview) return;
+    if (decision.decision === 'reject' && !decision.rejectReason.trim()) {
+      toast.error('Please provide a reason for rejection');
+      return;
+    }
 
     try {
-      await updateInterviewDecision(selectedInterview.id, decision.decision);
+      await updateInterviewDecision(selectedInterview.id, decision.decision, decision.rejectReason.trim());
       setDecisionDialogOpen(false);
-      setDecision({ decision: '' });
+      setDecision({ decision: '', rejectReason: '' });
       toast.success(`Decision: ${decision.decision}`);
     } catch (error) {
       console.error(error);
@@ -236,7 +260,7 @@ export function Interviews() {
             </div>
           </div>
 
-          {remarks.length > 0 && (
+          {(remarks.length > 0 || interview.rejectReason) && (
             <div className="p-3 bg-secondary rounded-lg">
               <p className="text-sm font-medium mb-1">Remarks:</p>
               {(interview.recruiterRemarks ?? []).map((item, index) => (
@@ -254,6 +278,9 @@ export function Interviews() {
                   Department Manager ({item.name}): {item.remark}
                 </p>
               ))}
+              {interview.rejectReason && (
+                <p className="text-sm text-muted-foreground">Reject Reason: &quot;{interview.rejectReason}&quot;</p>
+              )}
             </div>
           )}
 
@@ -282,10 +309,38 @@ export function Interviews() {
                     Make Decision
                   </Button>
                 )}
+                {!isHiringManager && user?.role === 'Recruiter' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const date = new Date(interview.interviewDateTime!);
+                      setSelectedInterview(interview);
+                      setNewInterview({
+                        candidateId: interview.id,
+                        interviewDate: interview.interviewDateTime!.slice(0, 10),
+                        interviewTime: date.toTimeString().slice(0, 5),
+                        interviewType: interview.interviewType ?? 'Technical Interview',
+                      });
+                      setDialogOpen(true);
+                    }}
+                  >
+                    Edit Schedule
+                  </Button>
+                )}
               </>
             )}
-            {!interview.interviewDateTime && canWrite && (
-              <Button variant="outline" size="sm" onClick={() => setDialogOpen(true)}>
+            {!interview.interviewDateTime && canWrite && !isHiringManager && (
+              <Button variant="outline" size="sm" onClick={() => {
+                setSelectedInterview(interview);
+                setNewInterview({
+                  candidateId: interview.id,
+                  interviewDate: '',
+                  interviewTime: '',
+                  interviewType: 'Technical Interview',
+                });
+                setDialogOpen(true);
+              }}>
                 Schedule
               </Button>
             )}
@@ -313,20 +368,28 @@ export function Interviews() {
         {canWrite && user?.role === 'Recruiter' && (
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger asChild>
-              <Button>
+              <Button onClick={() => {
+                setSelectedInterview(null);
+                setNewInterview({
+                  candidateId: '',
+                  interviewDate: '',
+                  interviewTime: '',
+                  interviewType: 'Technical Interview',
+                });
+              }}>
                 <Plus className="mr-2 h-4 w-4" />
                 Schedule Interview
               </Button>
             </DialogTrigger>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Schedule Interview</DialogTitle>
+                <DialogTitle>{selectedInterview?.interviewDateTime ? 'Edit Interview Schedule' : 'Schedule Interview'}</DialogTitle>
                 <DialogDescription>
                   Create a new interview appointment for a shortlisted candidate
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
-                <div className="space-y-2">
+                {!selectedInterview && <div className="space-y-2">
                   <Label htmlFor="candidate">Candidate *</Label>
                   <Select
                     value={newInterview.candidateId}
@@ -343,7 +406,12 @@ export function Interviews() {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </div>}
+                {selectedInterview && (
+                  <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                    Candidate: <span className="font-medium">{selectedInterview.candidateName}</span>
+                  </div>
+                )}
                 <div className="space-y-2">
                   <Label htmlFor="interviewType">Interview Type *</Label>
                   <Select
@@ -381,14 +449,19 @@ export function Interviews() {
                       onChange={(e) => setNewInterview({ ...newInterview, interviewTime: e.target.value })}
                     />
                   </div>
+                  {hasScheduleConflict && (
+                    <p className="text-sm text-red-600">
+                      You have interview schedule on this time. please try to schedule on other time
+                    </p>
+                  )}
                 </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setDialogOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleScheduleInterview}>
-                  Schedule Interview
+                <Button onClick={handleScheduleInterview} disabled={hasScheduleConflict}>
+                  {selectedInterview?.interviewDateTime ? 'Save Changes' : 'Schedule Interview'}
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -474,7 +547,11 @@ export function Interviews() {
               <Label htmlFor="decision">Decision *</Label>
               <Select
                 value={decision.decision}
-                onValueChange={(value) => setDecision({ ...decision, decision: value as typeof decision.decision })}
+                onValueChange={(value) => setDecision({
+                  ...decision,
+                  decision: value as typeof decision.decision,
+                  rejectReason: value === 'reject' ? decision.rejectReason : '',
+                })}
               >
                 <SelectTrigger id="decision">
                   <SelectValue placeholder="Select decision" />
@@ -487,6 +564,17 @@ export function Interviews() {
                 </SelectContent>
                 </Select>
             </div>
+            {decision.decision === 'reject' && (
+              <div className="space-y-2">
+                <Label htmlFor="rejectReason">Reason *</Label>
+                <Textarea
+                  id="rejectReason"
+                  placeholder="Enter the reason for rejecting this interview"
+                  value={decision.rejectReason}
+                  onChange={(event) => setDecision({ ...decision, rejectReason: event.target.value })}
+                />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDecisionDialogOpen(false)}>

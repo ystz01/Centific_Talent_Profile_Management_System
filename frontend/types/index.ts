@@ -36,12 +36,15 @@ export interface Candidate {
 export interface Interview {
   id: string;
   candidateId: string;
+  jobId?: string;
   candidateName: string;
   position: string;
   interviewer: string;
   interviewDateTime?: string | null;
   interviewType?: 'Technical Interview' | 'Phone Interview' | 'HR Interview' | 'Final Interview' | null;
   interviewStatus?: 'pending' | 'accept' | 'reject' | '2nd Interview' | 'KIV';
+  hiringMatrixCreation?: 'yes' | 'no';
+  rejectReason?: string | null;
   recruiterRemarks?: Array<{ name: string; remark: string }>;
   hiringManagerRemarks?: Array<{ name: string; remark: string }>;
   departmentManagerRemarks?: Array<{ name: string; remark: string }>;
@@ -62,6 +65,7 @@ export interface JobPosition {
   department: string;
   createdBy: string;
   createdDate: string;
+  createdTimestamp?: number;
   status: 'Open' | 'Closed';
 }
 

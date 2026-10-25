@@ -18,7 +18,7 @@ import {
 } from '@/lib/firebase';
 import { toast } from 'sonner';
 
-type CandidateStatus = 'Approve to Hire' | 'Hired' | '2nd Interview' | 'KIV' | 'Reject' | 'Recommendation';
+type CandidateStatus = 'Active' | 'Approve to Hire' | 'Hired' | '2nd Interview' | 'KIV' | 'Reject';
 
 interface Candidate {
   id: string;
@@ -55,6 +55,7 @@ interface Interview {
   type: string;
   interviewer: string;
   status: string;
+  rejectReason?: string | null;
   recruiterRemarks: Array<{ name: string; remark: string }>;
   hiringManagerRemarks: Array<{ name: string; remark: string }>;
   departmentManagerRemarks: Array<{ name: string; remark: string }>;
@@ -102,6 +103,28 @@ const mockCandidates: Candidate[] = [
   },
 ];
 
+const candidateStatuses: CandidateStatus[] = [
+  'Active',
+  'Approve to Hire',
+  'Hired',
+  '2nd Interview',
+  'KIV',
+  'Reject',
+];
+
+const interviewStatusLabels: Record<string, string> = {
+  pending: 'Active',
+  accept: 'Accept',
+  reject: 'Reject',
+  '2nd Interview': '2nd Interview',
+  KIV: 'Keep In View',
+};
+
+const normalizeCandidateStatus = (status?: string | null): CandidateStatus =>
+  status && candidateStatuses.includes(status as CandidateStatus)
+    ? status as CandidateStatus
+    : 'Active';
+
 export default function CandidateProfilePage() {
   const { user } = useAuth();
   const canUpdateProfile = user?.role !== 'Department Manager';
@@ -126,9 +149,7 @@ export default function CandidateProfilePage() {
           uploadedDate: candidate.created_at ?? '—',
           education: candidate.highest_education ?? '—',
           skills: Array.isArray(candidate.skills) ? candidate.skills : [],
-          status: candidate.status && ['Approve to Hire', 'Hired', '2nd Interview', 'KIV', 'Reject', 'Recommendation'].includes(candidate.status)
-            ? candidate.status as CandidateStatus
-            : 'Recommendation',
+          status: normalizeCandidateStatus(candidate.status),
           resumeUrl: candidate.resume_url ?? '',
           location: candidate.location ?? '',
           educationLevel: candidate.education_level ?? '',
@@ -180,10 +201,11 @@ export default function CandidateProfilePage() {
       time: '',
       type: record.interview_type ?? '-',
       interviewer: record.interviewer ?? '-',
-      status: record.interview_status ?? 'pending',
+      status: record.interview_status || 'pending',
       recruiterRemarks: record.recruiter_remark ?? [],
       hiringManagerRemarks: record.hiringmanager_remark ?? [],
       departmentManagerRemarks: record.departmentmanager_remark ?? [],
+      rejectReason: record.reject_reason ?? null,
     }))),
     (error) => {
       console.error(error);
@@ -196,12 +218,9 @@ export default function CandidateProfilePage() {
   );
   const getCandidateStatus = (candidate: Candidate) => {
     const interview = interviews.find((item) => item.candidateId === candidate.id);
-    return ({
-      accept: 'Accept',
-      reject: 'Reject',
-      KIV: 'Keep In View',
-      '2nd Interview': '2nd Interview',
-    }[interview?.status ?? ''] ?? candidate.status);
+    return interview
+      ? (interviewStatusLabels[interview.status || 'pending'] ?? candidate.status)
+      : candidate.status;
   };
   const filteredCandidates = candidates.filter((candidate: Candidate) => {
     const matchesSearch =
@@ -209,16 +228,7 @@ export default function CandidateProfilePage() {
       candidate.position.toLowerCase().includes(searchQuery.toLowerCase());
     return matchesSearch && (statusFilter === 'all' || getCandidateStatus(candidate) === statusFilter);
   });
-  const currentInterviewStatus = candidateInterviews[0]?.status;
-  const profileStatus = currentInterviewStatus
-    ? ({
-        pending: 'Pending',
-        accept: 'Accept',
-        reject: 'Reject',
-        '2nd Interview': '2nd Interview',
-        KIV: 'Keep In View',
-      }[currentInterviewStatus] ?? currentInterviewStatus)
-    : selectedCandidate.status;
+  const profileStatus = getCandidateStatus(selectedCandidate);
 
   const updateSelectedCandidate = (updates: Partial<Candidate>) => {
     setSelectedCandidate((current) => ({ ...current, ...updates }));
@@ -328,6 +338,7 @@ export default function CandidateProfilePage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="Active">Active</SelectItem>
                 <SelectItem value="Keep In View">Keep In View</SelectItem>
                 <SelectItem value="Accept">Accept</SelectItem>
                 <SelectItem value="Reject">Reject</SelectItem>
@@ -500,6 +511,9 @@ export default function CandidateProfilePage() {
                       <p className="text-sm">Recruiter: {interview.recruiterRemarks.map((item) => `(${item.name}): ${item.remark}`).join(' | ') || '-'}</p>
                       <p className="text-sm">Hiring Manager: {interview.hiringManagerRemarks.map((item) => `(${item.name}): ${item.remark}`).join(' | ') || '-'}</p>
                       <p className="text-sm">Department Manager: {interview.departmentManagerRemarks.map((item) => `(${item.name}): ${item.remark}`).join(' | ') || '-'}</p>
+                      {interview.rejectReason && (
+                        <p className="text-sm">Reject Reason: &quot;{interview.rejectReason}&quot;</p>
+                      )}
                     </div>
                   ))
                 ) : (

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from 'react';
-import { Plus, Edit, Eye, CheckCircle2, Ban } from 'lucide-react';
+import { Plus, Edit, Eye, CheckCircle2, Ban, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -51,6 +51,12 @@ export function JobPositions() {
   const [statusDialogOpen, setStatusDialogOpen] = useState(false);
   const [statusJob, setStatusJob] = useState<JobPosition | null>(null);
   const [selectedJob, setSelectedJob] = useState<JobPosition | null>(null);
+  const [pageSize, setPageSize] = useState<number | 'all'>(10);
+  const [customPageSize, setCustomPageSize] = useState(20);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [filterColumn, setFilterColumn] = useState<string | null>(null);
+  const [draftFilters, setDraftFilters] = useState<Record<string, string[]>>({});
+  const [appliedFilters, setAppliedFilters] = useState<Record<string, string[]>>({});
   const [newJob, setNewJob] = useState<JobFormState>({
     positionName: '',
     requiredCandidates: 1,
@@ -74,6 +80,7 @@ export function JobPositions() {
             department: record.Department,
             createdBy: record.Created_by,
             createdDate,
+            createdTimestamp: record.Created_date?.toMillis() ?? 0,
             status: record.Status ? 'Open' : 'Closed',
           };
         })
@@ -83,6 +90,48 @@ export function JobPositions() {
 
     return () => unsubscribe();
   }, []);
+
+  const jobColumns: Array<{ key: string; label: string; values: (job: JobPosition) => string[] }> = [
+    { key: 'positionName', label: 'Position', values: (job) => [job.positionName] },
+    { key: 'department', label: 'Department', values: (job) => [job.department] },
+    { key: 'requiredCandidates', label: 'Required Candidates', values: (job) => [String(job.requiredCandidates)] },
+    { key: 'skillsNeeded', label: 'Skill Preferred', values: (job) => job.skillsNeeded },
+    { key: 'salaryRange', label: 'Salary Range', values: (job) => [job.salaryRange] },
+    { key: 'status', label: 'Status', values: (job) => [job.status] },
+    { key: 'createdBy', label: 'Created By', values: (job) => [job.createdBy] },
+    { key: 'createdDate', label: 'Created Date', values: (job) => [job.createdDate] },
+  ];
+  const filteredJobs = jobs
+    .filter((job) => jobColumns.every((column) => {
+      const selectedValues = appliedFilters[column.key] ?? [];
+      return selectedValues.length === 0
+        || column.values(job).some((value) =>
+          selectedValues.some((selectedValue) =>
+            selectedValue.localeCompare(value, undefined, { sensitivity: 'accent' }) === 0
+          )
+        );
+    }))
+    .sort((a, b) => (b.createdTimestamp ?? 0) - (a.createdTimestamp ?? 0));
+  const totalPages = pageSize === 'all' ? 1 : Math.max(1, Math.ceil(filteredJobs.length / pageSize));
+  const visibleJobs = pageSize === 'all'
+    ? filteredJobs
+    : filteredJobs.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const getColumnValues = (key: string) => {
+    const column = jobColumns.find((item) => item.key === key);
+    const valuesByKey = new Map<string, string>();
+    filteredJobs.flatMap((job) => column?.values(job) ?? []).forEach((value) => {
+      const normalizedValue = value.trim().toLocaleLowerCase();
+      if (!valuesByKey.has(normalizedValue)) {
+        valuesByKey.set(normalizedValue, value);
+      }
+    });
+    return [...valuesByKey.values()].sort((a, b) => a.localeCompare(b));
+  };
+  const applyColumnFilter = () => {
+    setAppliedFilters(draftFilters);
+    setCurrentPage(1);
+    setFilterColumn(null);
+  };
 
   const resetJobForm = () => {
     setNewJob({
@@ -300,48 +349,89 @@ export function JobPositions() {
 
       <Card>
         <CardHeader>
-          <CardTitle>All Job Positions ({jobs.length})</CardTitle>
+          <CardTitle>All Job Positions ({filteredJobs.length})</CardTitle>
         </CardHeader>
         <CardContent>
           {loadingJobs ? (
             <p className="py-6 text-sm text-muted-foreground">Loading job positions...</p>
           ) : null}
-          <Table>
+          <div className="min-h-[360px] overflow-x-auto">
+          <Table className="min-w-[1100px] table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>Position</TableHead>
-                <TableHead>Department</TableHead>
-                <TableHead>Required Candidates</TableHead>
-                <TableHead>Skill Preferred</TableHead>
-                <TableHead>Salary Range</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created By</TableHead>
-                <TableHead>Created Date</TableHead>
+                {jobColumns.map((column) => (
+                  <TableHead key={column.key} className="relative whitespace-nowrap">
+                    <span>{column.label}</span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="ml-1 h-7 w-7"
+                      aria-label={`Filter by ${column.label}`}
+                      onClick={() => {
+                        setFilterColumn(filterColumn === column.key ? null : column.key);
+                        setDraftFilters(appliedFilters);
+                      }}
+                    >
+                      <Filter className={`h-3.5 w-3.5 ${appliedFilters[column.key]?.length ? 'text-primary' : ''}`} />
+                    </Button>
+                    {filterColumn === column.key && (
+                      <div className="absolute left-0 top-full z-20 mt-1 min-w-52 rounded-md border bg-background p-3 shadow-lg">
+                        <div className="max-h-48 space-y-2 overflow-y-auto">
+                          {getColumnValues(column.key).map((value) => {
+                            const checked = (draftFilters[column.key] ?? []).includes(value);
+                            return (
+                              <label key={value} className="flex items-center gap-2 text-sm font-normal">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(event) => {
+                                    const current = draftFilters[column.key] ?? [];
+                                    setDraftFilters({
+                                      ...draftFilters,
+                                      [column.key]: event.target.checked
+                                        ? [...current, value]
+                                        : current.filter((item) => item !== value),
+                                    });
+                                  }}
+                                />
+                                <span>{value || '(Blank)'}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 flex justify-between gap-2 border-t pt-2">
+                          <Button variant="ghost" size="sm" onClick={() => setDraftFilters({ ...draftFilters, [column.key]: [] })}>Clear</Button>
+                          <Button size="sm" onClick={applyColumnFilter}>Apply Filter</Button>
+                        </div>
+                      </div>
+                    )}
+                  </TableHead>
+                ))}
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {jobs.map((job) => (
+              {visibleJobs.map((job) => (
                 <TableRow key={job.id}>
-                  <TableCell className="font-medium">{job.positionName}</TableCell>
-                  <TableCell>{job.department}</TableCell>
-                  <TableCell>{job.requiredCandidates}</TableCell>
-                  <TableCell className="whitespace-normal align-top">
+                  <TableCell className="max-w-[180px] whitespace-normal break-words font-medium [overflow-wrap:anywhere]">{job.positionName}</TableCell>
+                  <TableCell className="max-w-[140px] whitespace-normal break-words [overflow-wrap:anywhere]">{job.department}</TableCell>
+                  <TableCell className="whitespace-normal">{job.requiredCandidates}</TableCell>
+                  <TableCell className="max-w-[190px] whitespace-normal break-words align-top [overflow-wrap:anywhere]">
                     <ul className="list-disc pl-5 text-sm">
                       {job.skillsNeeded.map((skill, index) => (
                         <li key={index}>{skill}</li>
                       ))}
                     </ul>
                   </TableCell>
-                  <TableCell>{formatSalaryRange(job.salaryRange)}</TableCell>
-                  <TableCell>
+                  <TableCell className="max-w-[190px] whitespace-normal break-words [overflow-wrap:anywhere]">{formatSalaryRange(job.salaryRange)}</TableCell>
+                  <TableCell className="whitespace-normal">
                     <Badge variant={job.status === 'Open' ? 'default' : 'secondary'}>
                       {job.status}
                     </Badge>
                   </TableCell>
-                  <TableCell>{job.createdBy}</TableCell>
-                  <TableCell>{job.createdDate}</TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="max-w-[140px] whitespace-normal break-words [overflow-wrap:anywhere]">{job.createdBy}</TableCell>
+                  <TableCell className="whitespace-normal">{job.createdDate}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right">
                     <div className="flex justify-end gap-2">
                       <Button variant="ghost" size="sm" onClick={() => handleViewJob(job)}>
                         <Eye className="h-4 w-4" />
@@ -360,8 +450,84 @@ export function JobPositions() {
                   </TableCell>
                 </TableRow>
               ))}
+              {visibleJobs.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={jobColumns.length + 1} className="h-48 text-center text-muted-foreground">
+                    No job positions match the selected filters.
+                  </TableCell>
+                </TableRow>
+              )}
+              {visibleJobs.length > 0 && Array.from({
+                length: Math.max(0, Math.min(5, pageSize === 'all' ? 5 : pageSize) - visibleJobs.length),
+              }).map((_, index) => (
+                <TableRow key={`empty-${index}`} aria-hidden="true" className="pointer-events-none">
+                  <TableCell colSpan={jobColumns.length + 1} className="h-16 text-transparent">
+                    .
+                  </TableCell>
+                </TableRow>
+              ))}
             </TableBody>
           </Table>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <span>Rows per page</span>
+              <select
+                className="h-9 rounded-md border bg-background px-2"
+                value={pageSize === 'all' ? 'all' : [5, 10, 15].includes(pageSize) ? String(pageSize) : 'custom'}
+                onChange={(event) => {
+                  const value = event.target.value === 'all'
+                    ? 'all'
+                    : event.target.value === 'custom'
+                      ? customPageSize
+                      : Number(event.target.value);
+                  setPageSize(value);
+                  setCurrentPage(1);
+                }}
+              >
+                <option value="5">5</option>
+                <option value="10">10</option>
+                <option value="15">15</option>
+                <option value="custom">Custom</option>
+                <option value="all">Show all</option>
+              </select>
+              {pageSize !== 'all' && ![5, 10, 15].includes(pageSize) && (
+                <Input
+                  type="number"
+                  min="1"
+                  className="w-20"
+                  value={customPageSize}
+                  onChange={(event) => {
+                    const value = Math.max(1, Number(event.target.value) || 1);
+                    setCustomPageSize(value);
+                    setPageSize(value);
+                    setCurrentPage(1);
+                  }}
+                  aria-label="Custom rows per page"
+                />
+              )}
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={pageSize === 'all'}
+                  onChange={(event) => {
+                    setPageSize(event.target.checked ? 'all' : 10);
+                    setCurrentPage(1);
+                  }}
+                />
+                Show all
+              </label>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span>Page {currentPage} of {totalPages}</span>
+              <Button variant="outline" size="icon" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => page - 1)}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="icon" disabled={currentPage >= totalPages} onClick={() => setCurrentPage((page) => page + 1)}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
         </CardContent>
       </Card>
 

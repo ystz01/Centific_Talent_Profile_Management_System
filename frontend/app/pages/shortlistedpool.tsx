@@ -118,7 +118,17 @@ export function ShortlistedPool() {
 
   const handleReject = async (id: string) => {
     try {
-      await updateShortlistedDecision(id, 'Reject');
+      const candidate = candidates.find((item) => item.id === id);
+      await updateShortlistedDecision(id, 'Reject', candidate ? {
+        id: candidate.id,
+        candidateId: candidate.candidateId,
+        candidateName: candidate.candidateName,
+        phone: candidate.phone,
+        email: candidate.email,
+        jobId: candidate.jobId,
+        jobName: candidate.jobPosition,
+        position: candidate.position ?? candidate.jobPosition,
+      } : undefined);
       toast.error('Candidate rejected');
     } catch (error) {
       console.error(error);

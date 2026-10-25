@@ -43,6 +43,7 @@ import {
   subscribeToInterviews,
   updateCandidateStatus,
   updateHiringMatrixApproval,
+  markInterviewHiringMatrixCreated,
   type FirestoreCandidate,
   type FirestoreHiringMatrix,
 } from '@/lib/firebase';
@@ -136,6 +137,7 @@ export function HiringMatrix() {
   const [matrices, setMatrices] = useState<HiringMatrixType[]>([]);
   const [acceptedCandidates, setAcceptedCandidates] = useState<Array<{
     id: string;
+    interviewId: string;
     name: string;
     position: string;
     email: string;
@@ -199,18 +201,24 @@ export function HiringMatrix() {
   ), []);
 
   useEffect(() => {
-    let interviews: Array<{ candidateId?: string; candidateName?: string; position?: string; email?: string; phone?: string; interview_status?: string }> = [];
+    let interviews: Array<{ id: string; candidateId?: string; candidateName?: string; position?: string; email?: string; phone?: string; interview_status?: string; hiring_matrix_creation?: 'yes' | 'no' }> = [];
     let candidates: Array<FirestoreCandidate & { id: string }> = [];
 
     const updateAcceptedCandidates = () => {
       const candidateById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
       setAcceptedCandidates(
         interviews
-          .filter((interview) => interview.interview_status === 'accept' && interview.candidateId)
+          .filter((interview) =>
+            interview.interview_status === 'accept'
+            && interview.hiring_matrix_creation !== 'yes'
+            && interview.candidateId
+            && !matrices.some((matrix) => matrix.candidateId === interview.candidateId)
+          )
           .map((interview) => {
             const candidate = candidateById.get(interview.candidateId!);
             return {
               id: interview.candidateId!,
+              interviewId: interview.id,
               name: interview.candidateName ?? candidate?.name ?? '',
               position: interview.position ?? '',
               email: interview.email ?? candidate?.email ?? '',
@@ -240,7 +248,7 @@ export function HiringMatrix() {
       unsubscribeInterviews();
       unsubscribeCandidates();
     };
-  }, []);
+  }, [matrices]);
 
   const formSections: { key: FormSectionKey; label: string }[] = [
     { key: 'required', label: 'Required Information' },
@@ -360,6 +368,19 @@ export function HiringMatrix() {
       toast.error('Please fill in all required fields (Name, Job Title, Start Date, Employment Type)');
       return;
     }
+    const today = new Date().toISOString().split('T')[0];
+    if (formData.startDate < today) {
+      toast.error('Start date cannot be in the past');
+      return;
+    }
+    if (formData.contractEndDate && formData.contractEndDate < today) {
+      toast.error('Current contract end date cannot be in the past');
+      return;
+    }
+    if (formData.contractEndDate && formData.contractEndDate < formData.startDate) {
+      toast.error('Current contract end date cannot be before the start date');
+      return;
+    }
 
     try {
       const salary = formatSalary(formData.basicSalary);
@@ -409,7 +430,11 @@ export function HiringMatrix() {
         await updateHiringMatrix(selectedMatrix.id, payload);
       } else {
         await createHiringMatrix(payload);
-      }
+          const acceptedCandidate = acceptedCandidates.find((candidate) => candidate.id === payload.candidate_id);
+          if (acceptedCandidate) {
+            await markInterviewHiringMatrixCreated(acceptedCandidate.interviewId);
+          }
+        }
       setPageMode('list');
       setSelectedMatrix(null);
       toast.success('Hiring matrix created successfully');
@@ -769,7 +794,7 @@ export function HiringMatrix() {
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="startDate">Start Date *</Label>
-                          <Input id="startDate" type="date" value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} readOnly={viewOnly} disabled={viewOnly} />
+                          <Input id="startDate" type="date" min={new Date().toISOString().split('T')[0]} value={formData.startDate} onChange={(e) => setFormData({ ...formData, startDate: e.target.value })} readOnly={viewOnly} disabled={viewOnly} />
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="employmentType">Employment Type *</Label>
@@ -791,7 +816,7 @@ export function HiringMatrix() {
                     <section className="space-y-4">
                       <h3 className="font-semibold text-sm">Employment Details</h3>
                       <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2"><Label htmlFor="contractEndDate">Current Contract End Date (If applicable)</Label><Input id="contractEndDate" type="date" value={formData.contractEndDate} onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
+                        <div className="space-y-2"><Label htmlFor="contractEndDate">Current Contract End Date (If applicable)</Label><Input id="contractEndDate" type="date" min={new Date().toISOString().split('T')[0]} value={formData.contractEndDate} onChange={(e) => setFormData({ ...formData, contractEndDate: e.target.value })} readOnly={viewOnly} disabled={viewOnly} /></div>
                         <div className="space-y-2"><Label htmlFor="basicSalary">Basic Salary Offered</Label><Input id="basicSalary" placeholder="RM 0.00" value={formData.basicSalary} onChange={(e) => setFormData({ ...formData, basicSalary: e.target.value })} onBlur={(e) => setFormData({ ...formData, basicSalary: formatSalary(e.target.value) })} readOnly={viewOnly} disabled={viewOnly} /></div>
                         <div className="space-y-2"><Label htmlFor="billableStatus">Billable / Non-Billable</Label><Select value={formData.billableStatus} onValueChange={(value) => setFormData({ ...formData, billableStatus: value })}><SelectTrigger id="billableStatus" disabled={viewOnly}><SelectValue placeholder="Select status" /></SelectTrigger><SelectContent><SelectItem value="Billable">Billable</SelectItem><SelectItem value="Non-Billable">Non-Billable</SelectItem></SelectContent></Select></div>
                         <div className="space-y-2"><Label htmlFor="hireType">New Hire / Internal transfer / Conversion</Label><Select value={formData.hireType} onValueChange={(value) => setFormData({ ...formData, hireType: value })}><SelectTrigger id="hireType" disabled={viewOnly}><SelectValue placeholder="Select hire type" /></SelectTrigger><SelectContent><SelectItem value="New Hire">New Hire</SelectItem><SelectItem value="Internal transfer">Internal transfer</SelectItem><SelectItem value="Conversion">Conversion</SelectItem></SelectContent></Select></div>

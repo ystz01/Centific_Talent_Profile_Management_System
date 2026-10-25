@@ -9,7 +9,7 @@ import {
   updatePassword,
   updateProfile,
 } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, getDocs, getFirestore, onSnapshot, query, serverTimestamp, Timestamp, deleteDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, getDocs, getFirestore, onSnapshot, query, serverTimestamp, Timestamp, deleteDoc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import type { Role } from '@/types';
 
 const requiredFirebaseEnv = (name: string, value: string | undefined): string => {
@@ -130,12 +130,15 @@ export type InterviewRemark = {
 
 export type FirestoreInterview = {
   candidateId?: string;
+  jobId?: string;
   candidateName?: string;
   phone?: string;
   email?: string;
   position?: string;
   interviewer?: string;
   interview_status?: 'pending' | 'accept' | 'reject' | '2nd Interview' | 'KIV';
+  hiring_matrix_creation?: 'yes' | 'no';
+  reject_reason?: string | null;
   interview_datetime?: string | null;
   interview_type?: 'Technical Interview' | 'Phone Interview' | 'HR Interview' | 'Final Interview' | null;
   recruiter_remark?: InterviewRemark[] | null;
@@ -493,7 +496,10 @@ export async function addToShortlistedPool(payload: {
   strengths?: string[];
   gaps?: string[];
 }) {
-  const documentReference = await addDoc(collection(db, SHORTLISTED_POOL_COLLECTION), {
+  const documentReference = doc(collection(db, SHORTLISTED_POOL_COLLECTION));
+  const batch = writeBatch(db);
+
+  batch.set(documentReference, {
     candidateId: payload.candidate.id,
     candidateName: payload.candidate.name ?? '',
     email: payload.candidate.email ?? '',
@@ -510,6 +516,10 @@ export async function addToShortlistedPool(payload: {
     hiringManagerDecision: 'Pending',
     createdAt: serverTimestamp(),
   });
+  batch.update(doc(db, CANDIDATES_COLLECTION, payload.candidate.id), {
+    status: 'pending shortlisted',
+  });
+  await batch.commit();
 
   return documentReference.id;
 }
@@ -537,10 +547,20 @@ export async function updateShortlistedDecision(
   decision: 'Approve to Hire' | 'Reject',
   candidate?: FirestoreShortlistedCandidate & { id: string }
 ) {
-  await updateDoc(doc(db, SHORTLISTED_POOL_COLLECTION, id), {
+  if (!candidate?.candidateId) {
+    throw new Error('The shortlisted candidate is missing its candidate ID.');
+  }
+
+  const batch = writeBatch(db);
+  batch.update(doc(db, SHORTLISTED_POOL_COLLECTION, id), {
     status: decision === 'Approve to Hire' ? 'Approved' : 'Rejected',
     hiringManagerDecision: decision,
   });
+  batch.update(doc(db, CANDIDATES_COLLECTION, candidate.candidateId), {
+    status: decision === 'Approve to Hire' ? 'pending interview' : 'active',
+  });
+  await batch.commit();
+
   if (decision === 'Approve to Hire' && candidate) {
     await createInterviewForApprovedCandidate(candidate);
   }
@@ -549,15 +569,29 @@ export async function updateShortlistedDecision(
 export async function createInterviewForApprovedCandidate(candidate: FirestoreShortlistedCandidate & { id: string }) {
   const interviewQuery = query(collection(db, INTERVIEWS_COLLECTION));
   const existing = await getDocs(interviewQuery);
-  const alreadyExists = existing.docs.some((item) => item.data().candidateId === candidate.candidateId);
+  const alreadyExists = existing.docs.some((item) => {
+    const interview = item.data() as FirestoreInterview;
+
+    if (interview.candidateId !== candidate.candidateId) {
+      return false;
+    }
+
+    // Older interview records do not have jobId, so use their position as a
+    // compatibility fallback while keeping applications for different jobs separate.
+    return interview.jobId
+      ? interview.jobId === candidate.jobId
+      : interview.position === (candidate.position ?? candidate.jobName);
+  });
   if (alreadyExists) return;
 
   await addDoc(collection(db, INTERVIEWS_COLLECTION), {
     candidateId: candidate.candidateId ?? '',
+    jobId: candidate.jobId ?? '',
     candidateName: candidate.candidateName ?? '',
     position: candidate.position ?? candidate.jobName ?? '',
     interviewer: '',
     interview_status: 'pending',
+    hiring_matrix_creation: 'no',
     interview_datetime: null,
     interview_type: null,
     recruiter_remark: [],
@@ -597,11 +631,20 @@ export async function scheduleInterview(
 
 export async function updateInterviewDecision(
   interviewId: string,
-  decision: NonNullable<FirestoreInterview['interview_status']>
+  decision: NonNullable<FirestoreInterview['interview_status']>,
+  rejectReason?: string
 ) {
   await updateDoc(doc(db, INTERVIEWS_COLLECTION, interviewId), {
     interview_status: decision,
+    ...(decision === 'accept' ? { hiring_matrix_creation: 'no' } : {}),
+    reject_reason: decision === 'reject' ? rejectReason ?? null : null,
     ...(decision === '2nd Interview' ? { interview_datetime: null, interview_type: null } : {}),
+  });
+}
+
+export async function markInterviewHiringMatrixCreated(interviewId: string) {
+  await updateDoc(doc(db, INTERVIEWS_COLLECTION, interviewId), {
+    hiring_matrix_creation: 'yes',
   });
 }
 
