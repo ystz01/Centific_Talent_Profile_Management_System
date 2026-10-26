@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { FirebaseError } from 'firebase/app';
@@ -14,14 +14,70 @@ import { toast } from 'sonner';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { signIn } = useAuth();
+  const { sendPasswordResetEmail, signIn } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isResetMode, setIsResetMode] = useState(false);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
+  const [remainingLockSeconds, setRemainingLockSeconds] = useState(0);
+
+  useEffect(() => {
+    const storedLock = window.localStorage.getItem('centific-login-lock');
+    if (!storedLock) return;
+
+    try {
+      const { failedAttempts: storedFailedAttempts, lockedUntil: storedLockedUntil } = JSON.parse(storedLock) as {
+        failedAttempts: number;
+        lockedUntil: number | null;
+      };
+
+      if (storedLockedUntil && storedLockedUntil <= Date.now()) {
+        window.localStorage.removeItem('centific-login-lock');
+        return;
+      }
+
+      setFailedAttempts(storedFailedAttempts);
+      setLockedUntil(storedLockedUntil);
+    } catch (error) {
+      console.error('Unable to restore login lock state:', error);
+      window.localStorage.removeItem('centific-login-lock');
+    }
+  }, []);
+
+  const isLocked = lockedUntil !== null && lockedUntil > Date.now();
+
+  useEffect(() => {
+    if (!lockedUntil) {
+      setRemainingLockSeconds(0);
+      return;
+    }
+
+    const updateRemainingTime = () => {
+      const seconds = Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000));
+      setRemainingLockSeconds(seconds);
+
+      if (seconds === 0) {
+        setLockedUntil(null);
+        setFailedAttempts(0);
+        window.localStorage.removeItem('centific-login-lock');
+      }
+    };
+
+    updateRemainingTime();
+    const intervalId = window.setInterval(updateRemainingTime, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [lockedUntil]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (isLocked) {
+      toast.error(`Too many failed attempts. Try again in ${remainingLockSeconds} seconds.`);
+      return;
+    }
 
     // Validate input
     if (!email.trim() || !password.trim()) {
@@ -36,6 +92,9 @@ export default function LoginPage() {
 
       // Login
       const signedInUser = await signIn(normalizedEmail, password);
+      setFailedAttempts(0);
+      setLockedUntil(null);
+      window.localStorage.removeItem('centific-login-lock');
 
       // User exists in Firebase but not in Firestore
       if (!signedInUser) {
@@ -53,8 +112,28 @@ export default function LoginPage() {
       if (error instanceof FirebaseError) {
         switch (error.code) {
           case 'auth/invalid-credential':
-            toast.error('Incorrect email or password.');
+          case 'auth/user-not-found':
+          case 'auth/wrong-password': {
+            const nextFailedAttempts = failedAttempts + 1;
+            setFailedAttempts(nextFailedAttempts);
+
+            if (nextFailedAttempts >= 5) {
+              const nextLockedUntil = Date.now() + 30_000;
+              setLockedUntil(nextLockedUntil);
+              window.localStorage.setItem(
+                'centific-login-lock',
+                JSON.stringify({ failedAttempts: nextFailedAttempts, lockedUntil: nextLockedUntil })
+              );
+              toast.error('Too many failed attempts. Login is locked for 30 seconds.');
+            } else {
+              window.localStorage.setItem(
+                'centific-login-lock',
+                JSON.stringify({ failedAttempts: nextFailedAttempts, lockedUntil: null })
+              );
+              toast.error('Incorrect email or password.');
+            }
             break;
+          }
 
           default:
             toast.error(`Login failed: ${error.message}`);
@@ -79,6 +158,36 @@ export default function LoginPage() {
     }
   };
 
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      toast.error('Please enter your email address.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await sendPasswordResetEmail(normalizedEmail);
+      toast.success('Password reset email sent. Please check your inbox.');
+      setIsResetMode(false);
+    } catch (error) {
+      console.error('Password reset failed:', error);
+      if (error instanceof FirebaseError) {
+        toast.error(
+          error.code === 'auth/invalid-email'
+            ? 'Please enter a valid email address.'
+            : 'Unable to send the password reset email. Please try again.'
+        );
+      } else {
+        toast.error('Unable to send the password reset email. Please try again.');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary/5 to-primary/10 p-4">
       <Card className="w-full max-w-md">
@@ -96,16 +205,18 @@ export default function LoginPage() {
 
           <div className="text-center">
             <CardTitle className="text-2xl">
-              Talent Management System
+              {isResetMode ? 'Reset your password' : 'Talent Management System'}
             </CardTitle>
             <CardDescription>
-              Sign in to access your account
+              {isResetMode
+                ? 'Enter your email and we will send you a reset link'
+                : 'Sign in to access your account'}
             </CardDescription>
           </div>
         </CardHeader>
 
         <CardContent>
-          <form onSubmit={handleLogin} className="space-y-4">
+          <form onSubmit={isResetMode ? handlePasswordReset : handleLogin} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
               <Input
@@ -119,26 +230,52 @@ export default function LoginPage() {
               />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                placeholder="Enter your password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={loading}
-                required
-              />
-            </div>
+            {!isResetMode && (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="password">Password</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    placeholder="Enter your password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    disabled={loading || isLocked}
+                    required
+                  />
+                </div>
 
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={loading}
-            >
-              {loading ? 'Signing in...' : 'Sign In'}
+                <div className="text-right">
+                  <button
+                    type="button"
+                    className="text-sm text-primary underline-offset-4 hover:underline"
+                    onClick={() => setIsResetMode(true)}
+                    disabled={loading}
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              </>
+            )}
+
+            <Button type="submit" className="w-full" disabled={loading || (!isResetMode && isLocked)}>
+              {loading
+                ? isResetMode ? 'Sending reset email...' : 'Signing in...'
+                : isResetMode ? 'Send reset email' : isLocked
+                  ? `Try again in ${remainingLockSeconds}s`
+                  : 'Sign In'}
             </Button>
+
+            {isResetMode && (
+              <button
+                type="button"
+                className="w-full text-sm text-muted-foreground underline-offset-4 hover:underline"
+                onClick={() => setIsResetMode(false)}
+                disabled={loading}
+              >
+                Back to sign in
+              </button>
+            )}
           </form>
         </CardContent>
       </Card>

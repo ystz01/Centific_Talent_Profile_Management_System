@@ -4,4 +4,8 @@ pass: 123456
 Hiring Manager: hiringmanager@centific.com
 pass: 123456
 
-Super admin
+Department Manager: departmentmanager@centific.com
+pass: 123456
+
+Super admin: superadmin@centific.com
+pass: 123456

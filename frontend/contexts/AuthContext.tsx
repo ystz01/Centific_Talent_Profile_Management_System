@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { Permission, User } from '@/types';
 import { rolePermissions } from '@/types';
-import { auth, fetchUserProfileById, firebaseSignIn, firebaseSignOut, normalizeRole, type FirestoreUserProfile } from '@/lib/firebase';
+import { auth, fetchUserProfileById, firebaseSendPasswordResetEmail, firebaseSignIn, firebaseSignOut, normalizeRole, type FirestoreUserProfile } from '@/lib/firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
 type AuthContextType = {
@@ -12,6 +12,7 @@ type AuthContextType = {
   ready: boolean;
   hasPermission: (feature: string, access: 'read' | 'write') => boolean;
   signIn: (email: string, password: string) => Promise<User | null>;
+  sendPasswordResetEmail: (email: string) => Promise<void>;
   signOut: () => Promise<void>;
 };
 
@@ -99,6 +100,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setReady(true);
   };
 
+  const sendPasswordResetEmail = async (email: string) => {
+    await firebaseSendPasswordResetEmail(email.trim().toLowerCase());
+  };
+
   const hasPermission = (feature: string, access: 'read' | 'write') => {
     if (!user) return false;
     const permissions: Permission[] = rolePermissions[user.role] ?? [];
@@ -112,6 +117,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     ready,
     hasPermission,
     signIn,
+    sendPasswordResetEmail,
     signOut,
   };
 
