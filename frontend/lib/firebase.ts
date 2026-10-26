@@ -4,6 +4,7 @@ import {
   EmailAuthProvider,
   getAuth,
   reauthenticateWithCredential,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut,
   updatePassword,
@@ -291,6 +292,10 @@ export function subscribeToOpenJobPositions(onChange: (jobs: Array<FirestoreJobP
 
 export async function firebaseSignIn(email: string, password: string) {
   return signInWithEmailAndPassword(auth, email, password);
+}
+
+export async function firebaseSendPasswordResetEmail(email: string) {
+  return sendPasswordResetEmail(auth, email);
 }
 
 export async function firebaseSignOut() {
