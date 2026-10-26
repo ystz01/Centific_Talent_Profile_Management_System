@@ -1,43 +1,21 @@
 'use client';
 
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
-
-type Theme = 'light' | 'dark';
+import { createContext, useContext, useEffect, useMemo } from 'react';
 
 type ThemeContextType = {
-  theme: Theme;
-  toggleTheme: () => void;
-  setTheme: (theme: Theme) => void;
+  theme: 'light';
 };
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 const storageKey = 'centific-theme';
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>('light');
-
   useEffect(() => {
-    const stored = localStorage.getItem(storageKey) as Theme | null;
-    if (stored === 'light' || stored === 'dark') {
-      setThemeState(stored);
-      document.documentElement.classList.toggle('dark', stored === 'dark');
-    }
+    document.documentElement.classList.remove('dark');
+    localStorage.setItem(storageKey, 'light');
   }, []);
 
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-    localStorage.setItem(storageKey, theme);
-  }, [theme]);
-
-  const setTheme = (nextTheme: Theme) => {
-    setThemeState(nextTheme);
-  };
-
-  const toggleTheme = () => {
-    setThemeState((current) => (current === 'dark' ? 'light' : 'dark'));
-  };
-
-  const value = useMemo<ThemeContextType>(() => ({ theme, toggleTheme, setTheme }), [theme]);
+  const value = useMemo<ThemeContextType>(() => ({ theme: 'light' }), []);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }
