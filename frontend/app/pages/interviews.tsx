@@ -30,6 +30,22 @@ import { Interview } from '@/types';
 import { toast } from 'sonner';
 import { addInterviewRemark, scheduleInterview, subscribeToInterviews, updateInterviewDecision, updateInterviewRemark } from '@/lib/firebase';
 
+const normalizeInterviewerName = (name: string) => name.trim().toLocaleLowerCase();
+
+const normalizeInterviewDateTime = (dateTime: string) => {
+  const parsedDate = new Date(dateTime);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return dateTime.slice(0, 16);
+  }
+
+  const pad = (value: number) => value.toString().padStart(2, '0');
+  return [
+    parsedDate.getFullYear(),
+    pad(parsedDate.getMonth() + 1),
+    pad(parsedDate.getDate()),
+  ].join('-') + `T${pad(parsedDate.getHours())}:${pad(parsedDate.getMinutes())}`;
+};
+
 export function Interviews() {
   const { hasPermission, user } = useAuth();
   const canWrite = hasPermission('Interview Management', 'write');
@@ -95,9 +111,10 @@ export function Interviews() {
     && selectedInterviewDateTime
     && interviews.some((interview) =>
       interview.id !== selectedInterview?.id
-      && interview.interviewer === user.name
-      && interview.interviewDateTime === selectedInterviewDateTime
-      && interview.interviewStatus === 'pending'
+      && normalizeInterviewerName(interview.interviewer) === normalizeInterviewerName(user.name)
+      && Boolean(interview.interviewDateTime)
+      && normalizeInterviewDateTime(interview.interviewDateTime!) === normalizeInterviewDateTime(selectedInterviewDateTime)
+      && (interview.interviewStatus === 'pending' || interview.interviewStatus === '2nd Interview')
     )
   );
   const completedInterviews = interviews.filter(
@@ -450,7 +467,7 @@ export function Interviews() {
                     />
                   </div>
                   {hasScheduleConflict && (
-                    <p className="text-sm text-red-600">
+                    <p className="col-span-2 text-sm text-red-600" role="alert">
                       You have interview schedule on this time. please try to schedule on other time
                     </p>
                   )}
