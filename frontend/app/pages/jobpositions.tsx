@@ -360,7 +360,16 @@ export function JobPositions() {
             <TableHeader>
               <TableRow>
                 {jobColumns.map((column) => (
-                  <TableHead key={column.key} className="relative whitespace-nowrap">
+                  <TableHead
+                    key={column.key}
+                    className={`relative whitespace-nowrap ${
+                      column.key === 'requiredCandidates'
+                        ? 'w-[170px]'
+                        : column.key === 'skillsNeeded'
+                          ? 'w-[220px]'
+                          : ''
+                    }`}
+                  >
                     <span>{column.label}</span>
                     <Button
                       variant="ghost"
@@ -415,8 +424,8 @@ export function JobPositions() {
                 <TableRow key={job.id}>
                   <TableCell className="max-w-[180px] whitespace-normal break-words font-medium [overflow-wrap:anywhere]">{job.positionName}</TableCell>
                   <TableCell className="max-w-[140px] whitespace-normal break-words [overflow-wrap:anywhere]">{job.department}</TableCell>
-                  <TableCell className="whitespace-normal">{job.requiredCandidates}</TableCell>
-                  <TableCell className="max-w-[190px] whitespace-normal break-words align-top [overflow-wrap:anywhere]">
+                  <TableCell className="w-[170px] whitespace-normal">{job.requiredCandidates}</TableCell>
+                  <TableCell className="w-[220px] max-w-[220px] whitespace-normal break-words align-top [overflow-wrap:anywhere]">
                     <ul className="list-disc pl-5 text-sm">
                       {job.skillsNeeded.map((skill, index) => (
                         <li key={index}>{skill}</li>

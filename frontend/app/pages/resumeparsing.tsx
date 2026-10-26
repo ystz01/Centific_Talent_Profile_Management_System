@@ -44,6 +44,7 @@ interface ParsedData {
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL;
 const apiBaseUrl = apiUrl?.replace(/\/+$/, '');
+const MAX_RESUME_SIZE = 5 * 1024 * 1024;
 
 const stringList = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
@@ -92,6 +93,7 @@ export function ResumeParsing() {
   const [languagesInput, setLanguagesInput] = useState('');
   const [leadershipInput, setLeadershipInput] = useState('');
   const [awardsInput, setAwardsInput] = useState('');
+  const [fileError, setFileError] = useState('');
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
@@ -100,8 +102,15 @@ export function ResumeParsing() {
       //'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
     },
     maxFiles: 1,
+    maxSize: MAX_RESUME_SIZE,
     disabled: !canWrite || parsing,
-    onDrop: (acceptedFiles) => {
+    onDrop: (acceptedFiles, fileRejections) => {
+      const isTooLarge = fileRejections.some((rejection) =>
+        rejection.errors.some((error) => error.code === 'file-too-large')
+      );
+
+      setFileError(isTooLarge ? 'The file is too large, The maximum size is 5MB' : '');
+
       if (acceptedFiles.length > 0) {
         void handleFileUpload(acceptedFiles[0]);
       }
@@ -109,6 +118,12 @@ export function ResumeParsing() {
   });
 
   const handleFileUpload = async (file: File) => {
+    if (file.size > MAX_RESUME_SIZE) {
+      setFileError('The file is too large, The maximum size is 5MB');
+      return;
+    }
+
+    setFileError('');
     setParsing(true);
     setParsedData(null);
     setEditing(false);
@@ -279,6 +294,11 @@ export function ResumeParsing() {
               </div>
             )}
           </div>
+          {fileError && (
+            <p className="mt-3 text-sm text-red-600" role="alert">
+              {fileError}
+            </p>
+          )}
         </CardContent>
       </Card>
 
