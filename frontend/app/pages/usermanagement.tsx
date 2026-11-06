@@ -408,7 +408,7 @@ export function UserManagement() {
                   <li>• View resumes and AI matching</li>
                   <li>• Manage talent pool and profiles</li>
                   <li>• Approve hiring matrix</li>
-                  <li>• View interviews</li>
+                  <li>• View and make decision towards interviews</li>
                 </ul>
               </div>
               <div>
@@ -438,7 +438,6 @@ export function UserManagement() {
                   <Badge variant="outline">Super Admin</Badge>
                 </h4>
                 <ul className="text-sm text-muted-foreground space-y-1">
-                  <li>• View-only access to all features</li>
                   <li>• Full user management</li>
                   <li>• Add/remove accounts</li>
                   <li>• Assign and modify roles</li>

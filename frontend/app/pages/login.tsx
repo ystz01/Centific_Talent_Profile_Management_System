@@ -174,15 +174,7 @@ export default function LoginPage() {
       setIsResetMode(false);
     } catch (error) {
       console.error('Password reset failed:', error);
-      if (error instanceof FirebaseError) {
-        toast.error(
-          error.code === 'auth/invalid-email'
-            ? 'Please enter a valid email address.'
-            : 'Unable to send the password reset email. Please try again.'
-        );
-      } else {
-        toast.error('Unable to send the password reset email. Please try again.');
-      }
+      toast.error('Unable to send the password reset email. Please try again.');
     } finally {
       setLoading(false);
     }

@@ -401,9 +401,9 @@ export async function createUserAccount(payload: {
 }
 
 export async function deleteUserAccount(userId: string, email?: string) {
-  return callUserAccountApi('/api/users', {
+  const query = email ? `?email=${encodeURIComponent(email)}` : '';
+  return callUserAccountApi(`/api/users/${encodeURIComponent(userId)}${query}`, {
     method: 'DELETE',
-    body: JSON.stringify({ user_id: userId, email }),
   });
 }
 

@@ -7,3 +7,5 @@ venv/
 node_modules/
 firebase.js
 .history/
+benchmark.py
+benchmark_results.csv
