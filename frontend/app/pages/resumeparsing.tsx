@@ -264,7 +264,7 @@ export function ResumeParsing() {
           <CardTitle>Upload Resume</CardTitle>
           <CardDescription>
             {canWrite
-              ? 'Upload a PDF to parse candidate information'
+              ? 'Upload a PDF to parse candidate information (Max 5MB)'
               : 'You have read-only access to this feature'}
           </CardDescription>
         </CardHeader>

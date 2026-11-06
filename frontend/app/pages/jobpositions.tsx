@@ -542,7 +542,7 @@ export function JobPositions() {
 
       {/* View Job Dialog */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-h-[80vh] min-w-0 max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{selectedJob?.positionName}</DialogTitle>
             <DialogDescription>Job Position Details</DialogDescription>
@@ -579,9 +579,13 @@ export function JobPositions() {
               </div>
               <div>
                 <p className="text-sm text-muted-foreground mb-2">Skills Needed</p>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex min-w-0 flex-wrap gap-2">
                   {selectedJob.skillsNeeded.map((skill, index) => (
-                    <Badge key={index} variant="secondary">
+                    <Badge
+                      key={index}
+                      variant="secondary"
+                      className="h-auto min-w-0 max-w-full whitespace-normal break-words text-left"
+                    >
                       {skill}
                     </Badge>
                   ))}

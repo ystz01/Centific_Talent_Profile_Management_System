@@ -219,7 +219,7 @@ export function HiringMatrix() {
             return {
               id: interview.candidateId!,
               interviewId: interview.id,
-              name: interview.candidateName ?? candidate?.name ?? '',
+              name: interview.candidateName?.trim() || candidate?.name?.trim() || '',
               position: interview.position ?? '',
               email: interview.email ?? candidate?.email ?? '',
               phone: interview.phone ?? candidate?.phone ?? '',
@@ -437,7 +437,7 @@ export function HiringMatrix() {
         }
       setPageMode('list');
       setSelectedMatrix(null);
-      toast.success('Hiring matrix created successfully');
+      toast.success(selectedMatrix ? 'Hiring Matrix Edited Successfully' : 'Hiring matrix created successfully');
     } catch (error) {
       console.error(error);
       toast.error('Unable to save hiring matrix.');
@@ -759,28 +759,38 @@ export function HiringMatrix() {
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
                           <Label htmlFor="employeeName">Employee Name (as per NRIC) *</Label>
-                          <Select
-                            value={formData.candidateId}
-                            onValueChange={(value) => {
-                              const candidate = acceptedCandidates.find((item) => item.id === value);
-                              if (!candidate) return;
-                              setFormData({
-                                ...formData,
-                                candidateId: candidate.id,
-                                employeeName: candidate.name,
-                                jobTitle: candidate.position,
-                                candidateEmail: candidate.email,
-                                candidateMobile: candidate.phone,
-                              });
-                            }}
-                          >
-                            <SelectTrigger id="employeeName" disabled={viewOnly}><SelectValue placeholder="Select an accepted candidate" /></SelectTrigger>
-                            <SelectContent>
-                              {acceptedCandidates.map((candidate) => (
-                                <SelectItem key={candidate.id} value={candidate.id}>{candidate.name}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                          {viewOnly || selectedMatrix ? (
+                            <Input
+                              id="employeeName"
+                              value={formData.employeeName}
+                              onChange={(event) => setFormData({ ...formData, employeeName: event.target.value })}
+                              readOnly={viewOnly}
+                              disabled={viewOnly}
+                            />
+                          ) : (
+                            <Select
+                              value={formData.candidateId}
+                              onValueChange={(value) => {
+                                const candidate = acceptedCandidates.find((item) => item.id === value);
+                                if (!candidate) return;
+                                setFormData({
+                                  ...formData,
+                                  candidateId: candidate.id,
+                                  employeeName: candidate.name,
+                                  jobTitle: candidate.position,
+                                  candidateEmail: candidate.email,
+                                  candidateMobile: candidate.phone,
+                                });
+                              }}
+                            >
+                              <SelectTrigger id="employeeName"><SelectValue placeholder="Select an accepted candidate" /></SelectTrigger>
+                              <SelectContent>
+                                {acceptedCandidates.map((candidate) => (
+                                  <SelectItem key={candidate.id} value={candidate.id}>{candidate.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
                         </div>
                         <div className="space-y-2">
                           <Label htmlFor="jobTitle">Job Title *</Label>
