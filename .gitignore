@@ -1,3 +1,4 @@
 .history/
 benchmark.py
 benchmark_results.csv
+.env

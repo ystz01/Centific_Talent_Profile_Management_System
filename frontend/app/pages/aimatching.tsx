@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { addToShortlistedPool, subscribeToCandidatesCollection, subscribeToOpenJobPositions, type FirestoreCandidate, type FirestoreJobPosition } from '@/lib/firebase';
+import { fetchFromApi, getApiBaseUrl } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface Candidate {
@@ -53,7 +54,7 @@ export default function AIMatching() {
   const [jobPositions, setJobPositions] = useState<Array<FirestoreJobPosition & { id: string }>>([]);
   const [results, setResults] = useState<MatchResult[]>([]);
   const [matchingMessage, setMatchingMessage] = useState('');
-  const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '');
+  const apiBaseUrl = getApiBaseUrl();
 
   useEffect(() => {
     return subscribeToCandidatesCollection(
@@ -101,7 +102,7 @@ export default function AIMatching() {
         throw new Error('No active candidates are available for matching.');
       }
 
-      const response = await fetch(`${apiBaseUrl}/api/find-candidates`, {
+      const response = await fetchFromApi('/api/find-candidates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

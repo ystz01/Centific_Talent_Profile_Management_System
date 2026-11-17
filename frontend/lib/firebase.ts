@@ -12,6 +12,7 @@ import {
 } from 'firebase/auth';
 import { addDoc, collection, doc, getDoc, getDocs, getFirestore, onSnapshot, query, serverTimestamp, Timestamp, deleteDoc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import type { Role } from '@/types';
+import { fetchFromApi, getApiBaseUrl } from '@/lib/api';
 
 const requiredFirebaseEnv = (name: string, value: string | undefined): string => {
   if (!value) {
@@ -345,13 +346,13 @@ export async function createUserProfile(payload: FirestoreUserProfile) {
 }
 
 async function callUserAccountApi(path: string, options: RequestInit) {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '');
+  const apiUrl = getApiBaseUrl();
   const token = await auth.currentUser?.getIdToken();
   if (!apiUrl || !token) {
     throw new Error('User account service is not configured or you are signed out.');
   }
 
-  const response = await fetch(`${apiUrl}${path}`, {
+  const response = await fetchFromApi(path, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
