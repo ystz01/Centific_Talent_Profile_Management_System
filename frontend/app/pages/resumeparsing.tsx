@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useAuth } from '@/contexts/AuthContext';
+import { fetchFromApi, getApiBaseUrl } from '@/lib/api';
 import { toast } from 'sonner';
 
 interface WorkHistoryEntry {
@@ -42,8 +43,7 @@ interface ParsedData {
   candidate_id: string;
 }
 
-const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-const apiBaseUrl = apiUrl?.replace(/\/+$/, '');
+const apiBaseUrl = getApiBaseUrl();
 const MAX_RESUME_SIZE = 5 * 1024 * 1024;
 
 const stringList = (value: unknown): string[] =>
@@ -136,7 +136,7 @@ export function ResumeParsing() {
         throw new Error('NEXT_PUBLIC_API_URL is not configured.');
       }
 
-      const response = await fetch(`${apiBaseUrl}/api/upload-and-parse-resume`, {
+      const response = await fetchFromApi('/api/upload-and-parse-resume', {
         method: 'POST',
         body: formData,
       });
@@ -196,7 +196,7 @@ export function ResumeParsing() {
       const languages = languagesInput.split(',').map((item) => item.trim()).filter(Boolean);
       const leadershipActivities = leadershipInput.split(',').map((item) => item.trim()).filter(Boolean);
       const awards = awardsInput.split(',').map((item) => item.trim()).filter(Boolean);
-      const response = await fetch(`${apiBaseUrl}/api/candidates/${parsedData.candidate_id}`, {
+      const response = await fetchFromApi(`/api/candidates/${parsedData.candidate_id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
